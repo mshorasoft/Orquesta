@@ -15,7 +15,7 @@ TAVILY_API_KEY  = os.getenv("TAVILY_API_KEY", "")
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
 
 GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_IMAGE_MODEL = "gemini-2.0-flash-exp-image-generation"
+GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 
 SYSTEM_PROMPTS = {
     "general": """Eres Orquesta, un asistente de IA de nivel experto. Tu objetivo es dar respuestas de la más alta calidad posible, como lo haría un especialista senior en el tema consultado.
