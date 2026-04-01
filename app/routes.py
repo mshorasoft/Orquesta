@@ -10,30 +10,22 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 REALTIME_KW = [
-    # Tiempo
     "hoy", "ahora", "actual", "actualmente", "últimas", "ultimo", "última",
     "hoy dia", "esta semana", "esta noche", "ayer", "mañana", "reciente",
     "today", "now", "latest", "current", "yesterday", "tonight", "this week",
-    # Deportes
     "partido", "resultado", "formación", "alineación", "ganó", "perdió",
     "empató", "score", "gol", "goles", "fixture", "tabla", "clasificación",
     "champions", "copa", "mundial", "liga", "torneo", "eliminatorias",
-    "vs", "contra", "jugó", "juega", "jugarán", "derrota", "victoria",
-    # Selecciones y equipos comunes
+    "jugó", "juega", "jugarán", "derrota", "victoria",
     "argentina", "brasil", "españa", "francia", "alemania", "inglaterra",
-    "uruguay", "colombia", "chile", "perú", "mexico", "zambia", "nigeria",
+    "uruguay", "colombia", "chile", "peru", "mexico", "zambia", "nigeria",
     "real madrid", "barcelona", "boca", "river", "messi", "ronaldo",
-    # Economía
     "precio", "cotización", "dólar", "euro", "peso", "bitcoin", "crypto",
-    "cuánto cuesta", "cuánto vale", "cotizan", "bolsa", "acciones", "nasdaq",
-    "price", "stock", "market", "exchange rate",
-    # Clima
+    "cuánto cuesta", "cuánto vale", "cotizan", "bolsa", "acciones",
     "clima", "temperatura", "pronóstico", "lluvia", "weather", "forecast",
-    # Noticias
     "noticias", "noticia", "news", "murió", "nació", "lanzó", "salió",
     "eligieron", "ganaron", "perdieron", "anunció", "declaró",
-    # Entretenimiento actual
-    "estreno", "película", "serie", "album", "canción", "trending",
+    "estreno", "trending",
 ]
 
 CODE_KW = [
@@ -47,24 +39,6 @@ ANALYSIS_KW = [
     "explica en detalle", "razona", "diferencia entre", "ventajas", "desventajas",
     "estrategia", "qué opinas", "qué pensás",
 ]
-
-
-def classify(prompt: str) -> str:
-    p = prompt.lower()
-    # Detectar preguntas con "vs" o "contra" — casi siempre son deportes en tiempo real
-    if " vs " in p or " contra " in p:
-        return "realtime"
-    # Detectar "cómo salió / cómo le fue / qué pasó"
-    if any(x in p for x in ["cómo salió", "como salio", "cómo le fue", "qué pasó", "que paso", "cómo quedó", "como quedo"]):
-        return "realtime"
-    if any(k in p for k in REALTIME_KW):
-        return "realtime"
-    if any(k in p for k in CODE_KW):
-        return "code"
-    if any(k in p for k in ANALYSIS_KW):
-        return "analysis"
-    return "text"
-
 
 MODELS = {
     "realtime": "llama-3.3-70b-versatile",
@@ -81,20 +55,35 @@ LABELS = {
 }
 
 
-async def call_groq(prompt: str, model: str) -> str:
+def classify(prompt: str) -> str:
+    p = prompt.lower()
+    if " vs " in p or " contra " in p:
+        return "realtime"
+    if any(x in p for x in ["cómo salió", "como salio", "cómo le fue", "qué pasó", "que paso", "cómo quedó", "como quedo"]):
+        return "realtime"
+    if any(k in p for k in REALTIME_KW):
+        return "realtime"
+    if any(k in p for k in CODE_KW):
+        return "code"
+    if any(k in p for k in ANALYSIS_KW):
+        return "analysis"
+    return "text"
+
+
+async def call_groq_with_history(prompt: str, model: str, history: list) -> str:
+    messages = [
+        {"role": "system", "content": "Eres Orquesta, un asistente de IA experto. Respondé siempre en el mismo idioma del usuario. Sé claro, directo y completo. Recordás la conversación anterior."}
+    ]
+    for m in history[-10:]:
+        role = "assistant" if m.role == "assistant" else "user"
+        messages.append({"role": role, "content": m.content})
+    messages.append({"role": "user", "content": prompt})
+
     async with httpx.AsyncClient(timeout=30) as client:
         res = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "Eres Orquesta, un asistente de IA experto. Respondé siempre en el mismo idioma del usuario. Sé claro, directo y completo."},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 2048,
-                "temperature": 0.7,
-            },
+            json={"model": model, "messages": messages, "max_tokens": 2048, "temperature": 0.7},
         )
         data = res.json()
         if not res.is_success:
@@ -117,18 +106,21 @@ async def call_tavily(query: str) -> str:
         data = res.json()
         if not res.is_success:
             raise Exception(data.get("message", "Error Tavily"))
-
         answer = data.get("answer", "")
         results = data.get("results", [])
         context = f"Respuesta directa: {answer}\n\n" if answer else ""
-        context += "\n\n".join(
-            f"{r['title']}\n{r['content']}" for r in results[:4]
-        )
+        context += "\n\n".join(f"{r['title']}\n{r['content']}" for r in results[:4])
         return context
+
+
+class HistoryMessage(BaseModel):
+    role: str
+    content: str
 
 
 class PromptRequest(BaseModel):
     prompt: str
+    history: list[HistoryMessage] = []
 
 
 class PromptResponse(BaseModel):
@@ -148,6 +140,8 @@ async def orchestrate(req: PromptRequest):
     model = MODELS[task]
     label = LABELS[task]
 
+    history_without_last = req.history[:-1] if req.history else []
+
     if task == "realtime" and TAVILY_API_KEY:
         try:
             context = await call_tavily(req.prompt)
@@ -157,11 +151,11 @@ async def orchestrate(req: PromptRequest):
                 f"Respondé de forma natural y completa en el mismo idioma de la pregunta. "
                 f"Usá la información provista sin citar números de fuente."
             )
-            result = await call_groq(synth_prompt, model)
+            result = await call_groq_with_history(synth_prompt, model, history_without_last)
         except Exception:
-            result = await call_groq(req.prompt, model)
+            result = await call_groq_with_history(req.prompt, model, history_without_last)
     else:
-        result = await call_groq(req.prompt, model)
+        result = await call_groq_with_history(req.prompt, model, history_without_last)
 
     return PromptResponse(
         result=result,
@@ -173,7 +167,4 @@ async def orchestrate(req: PromptRequest):
 
 @router.get("/status")
 async def status():
-    return {
-        "groq": bool(GROQ_API_KEY),
-        "tavily": bool(TAVILY_API_KEY),
-    }
+    return {"groq": bool(GROQ_API_KEY), "tavily": bool(TAVILY_API_KEY)}
