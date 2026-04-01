@@ -437,7 +437,8 @@ async def upload_file(
                                         "edit","modify","change","add","remove","transform","convierte",
                                         "pon","ponle","hazlo","hazla","similar","similares","campaña",
                                         "genera","crea","dibuja","ilustra"]):
-                img_url, label = await gemini_edit_image(prompt, b64, mime or "image/jpeg")
+                enhanced_prompt = prompt + ". IMPORTANTE: Generá una imagen completamente nueva y original basada en el estilo de la imagen adjunta. No uses imágenes de internet. No incluyas marcas de agua, logos ni texto. Crea contenido 100% original."
+                img_url, label = await gemini_edit_image(enhanced_prompt, b64, mime or "image/jpeg")
                 return {
                     "result": "✅ Imagen procesada.",
                     "task_type": "image_edit",
