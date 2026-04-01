@@ -165,7 +165,7 @@ def generate_image_url(prompt: str) -> str:
 
 async def call_gemini_vision(prompt: str, image_data: str, mime_type: str) -> str:
     """Analyze image or document with Gemini Flash"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [{
             "parts": [
