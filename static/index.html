@@ -9,236 +9,363 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
     --em: #1D9E75; --em-dark: #0F6E56; --em-light: #E1F5EE; --em-mid: #5DCAA5;
-    --carbon: #111210; --surface: #181a18; --surface2: #1f211f; --surface3: #262826;
-    --border: rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.12);
-    --text: #e8ede9; --text2: #8a9e8c; --text3: #4a574b;
-    --amber: #EF9F27;
+    --carbon: #0e100e; --surface: #161815; --surface2: #1c1e1c; --surface3: #222422;
+    --border: rgba(255,255,255,0.06); --border2: rgba(255,255,255,0.11);
+    --text: #e4e9e5; --text2: #7a927c; --text3: #3f4f40;
+    --amber: #EF9F27; --amber-bg: rgba(239,159,39,0.08);
     --font-display: 'DM Serif Display', serif;
     --font-body: 'Outfit', sans-serif;
     --font-mono: 'DM Mono', monospace;
   }
   html { background: var(--carbon); color: var(--text); font-family: var(--font-body); font-size: 16px; }
   body { min-height: 100vh; display: flex; flex-direction: column; }
+  #shell { display: flex; height: 100vh; overflow: hidden; }
 
-  #app { display:flex; flex-direction:column; height:100vh; max-width:860px; margin:0 auto; width:100%; }
+  #sidebar { width: 255px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: width .25s ease; overflow: hidden; }
+  #sidebar.collapsed { width: 0; }
+  .sidebar-header { padding: .9rem 1rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 9px; }
+  .sidebar-logo-mark { width: 26px; height: 26px; background: var(--em); border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .sidebar-logo-name { font-family: var(--font-display); font-size: 1.05rem; color: var(--em); white-space: nowrap; }
+  .new-chat-btn { margin: .65rem .75rem; padding: 8px 12px; background: var(--em); color: white; border: none; border-radius: 7px; font-family: var(--font-body); font-size: 13px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: background .2s; white-space: nowrap; }
+  .new-chat-btn:hover { background: var(--em-dark); }
+  .history-label { font-size: 10px; font-weight: 500; color: var(--text3); letter-spacing: .08em; text-transform: uppercase; padding: .4rem .9rem .2rem; }
+  #history-list { flex: 1; overflow-y: auto; padding: .2rem .4rem; scrollbar-width: none; }
+  #history-list::-webkit-scrollbar { display: none; }
+  .history-item { padding: 7px 9px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .15s, color .15s; display: flex; align-items: center; gap: 7px; }
+  .history-item:hover { background: var(--surface2); color: var(--text); }
+  .history-item.active { background: var(--surface3); color: var(--text); }
+  .history-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--em); flex-shrink: 0; opacity: .5; }
+  .sidebar-footer { padding: .65rem .9rem; border-top: 1px solid var(--border); font-size: 11px; color: var(--text3); line-height: 1.5; }
 
-  header { display:flex; align-items:center; justify-content:space-between; padding:1rem 1.5rem; border-bottom:1px solid var(--border); flex-shrink:0; }
-  .header-left { display:flex; align-items:center; gap:10px; }
-  .logo-mark { width:32px; height:32px; background:var(--em); border-radius:8px; display:flex; align-items:center; justify-content:center; }
-  .header-name { font-family:var(--font-display); font-size:1.3rem; color:var(--em); }
-  .model-badge { font-family:var(--font-mono); font-size:11px; color:var(--text3); background:var(--surface2); border:1px solid var(--border); border-radius:20px; padding:4px 10px; display:flex; align-items:center; gap:6px; }
-  .mbadge-dot { width:6px; height:6px; border-radius:50%; background:var(--em); transition:background .3s; }
-  #active-model-label { color:var(--em-mid); transition:color .3s; }
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: .7rem 1.2rem; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .header-left { display: flex; align-items: center; gap: 8px; }
+  #sidebar-toggle { width: 30px; height: 30px; background: none; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3.5px; border-radius: 6px; transition: background .15s; }
+  #sidebar-toggle:hover { background: var(--surface2); }
+  #sidebar-toggle span { width: 14px; height: 1.5px; background: var(--text2); border-radius: 2px; }
+  .model-badge { font-family: var(--font-mono); font-size: 11px; color: var(--text3); background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; padding: 3px 10px; display: flex; align-items: center; gap: 5px; }
+  .mbadge-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--em); transition: background .3s; }
+  #active-model-label { color: var(--em-mid); transition: color .3s; }
 
-  #messages { flex:1; overflow-y:auto; padding:1.5rem; display:flex; flex-direction:column; gap:1.5rem; scrollbar-width:thin; scrollbar-color:var(--surface3) transparent; }
-  #messages::-webkit-scrollbar { width:4px; }
-  #messages::-webkit-scrollbar-thumb { background:var(--surface3); border-radius:4px; }
+  #banner { margin: .65rem 1.2rem 0; background: rgba(29,158,117,0.07); border: 1px solid rgba(29,158,117,0.18); border-radius: 11px; padding: .8rem 1rem; display: flex; align-items: flex-start; gap: 11px; flex-shrink: 0; animation: slideDown .35s ease; }
+  @keyframes slideDown { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+  #banner.hidden { display: none; }
+  .banner-icon { width: 30px; height: 30px; background: var(--em); border-radius: 7px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+  .banner-content { flex: 1; min-width: 0; }
+  .banner-title { font-size: 12px; font-weight: 500; color: var(--em-mid); margin-bottom: 3px; }
+  .banner-text { font-size: 12px; color: var(--text2); line-height: 1.55; }
+  .banner-models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .banner-pill { font-size: 10px; font-family: var(--font-mono); background: rgba(29,158,117,0.1); color: var(--em-mid); border-radius: 20px; padding: 2px 7px; border: 1px solid rgba(29,158,117,0.18); }
+  .banner-close { background: none; border: none; cursor: pointer; color: var(--text3); font-size: 15px; padding: 0 0 0 6px; line-height: 1; flex-shrink: 0; }
+  .banner-close:hover { color: var(--text2); }
 
-  .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1rem; flex:1; text-align:center; padding:2rem 0; }
-  .welcome-icon { width:64px; height:64px; background:var(--em-light); border-radius:18px; display:flex; align-items:center; justify-content:center; }
-  .welcome h1 { font-family:var(--font-display); font-size:2rem; color:var(--text); font-weight:400; }
-  .welcome h1 em { color:var(--em); font-style:italic; }
-  .welcome p { font-size:14px; color:var(--text2); max-width:420px; line-height:1.7; }
-  .suggestions { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:.5rem; }
-  .chip { background:var(--surface2); border:1px solid var(--border2); border-radius:20px; padding:7px 14px; font-size:13px; color:var(--text2); cursor:pointer; transition:border-color .2s,color .2s; }
-  .chip:hover { border-color:var(--em); color:var(--em-mid); }
+  .disclaimer-bar { margin: .5rem 1.2rem 0; padding: 6px 11px; background: var(--amber-bg); border: 1px solid rgba(239,159,39,0.13); border-radius: 7px; font-size: 11px; color: var(--text2); display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
 
-  .message { display:flex; gap:12px; align-items:flex-start; animation:fadeUp .3s ease; }
-  @keyframes fadeUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
-  .message.user { flex-direction:row-reverse; }
-  .avatar { width:32px; height:32px; border-radius:8px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:500; }
-  .avatar.ai { background:var(--em); color:white; font-family:var(--font-display); font-size:15px; }
-  .avatar.user { background:var(--surface3); color:var(--text2); }
-  .bubble { max-width:75%; padding:12px 16px; border-radius:14px; font-size:14px; line-height:1.7; }
-  .message.user .bubble { background:var(--surface2); border:1px solid var(--border2); color:var(--text); border-radius:14px 4px 14px 14px; }
-  .message.ai .bubble { background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:4px 14px 14px 14px; }
-  .meta-pill { display:inline-flex; align-items:center; gap:5px; font-family:var(--font-mono); font-size:10px; color:var(--text3); background:var(--surface3); border-radius:20px; padding:3px 8px; margin-top:6px; }
-  .mpill-dot { width:5px; height:5px; border-radius:50%; }
+  #messages { flex: 1; overflow-y: auto; padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 1.1rem; scrollbar-width: thin; scrollbar-color: var(--surface3) transparent; }
+  #messages::-webkit-scrollbar { width: 3px; }
+  #messages::-webkit-scrollbar-thumb { background: var(--surface3); border-radius: 4px; }
 
-  .typing-indicator { display:flex; gap:4px; align-items:center; padding:6px 2px; }
-  .typing-indicator span { width:6px; height:6px; border-radius:50%; background:var(--em); animation:bounce 1.2s infinite; }
-  .typing-indicator span:nth-child(2) { animation-delay:.2s; }
-  .typing-indicator span:nth-child(3) { animation-delay:.4s; }
-  @keyframes bounce { 0%,60%,100%{transform:translateY(0);opacity:.4} 30%{transform:translateY(-5px);opacity:1} }
+  .welcome { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .9rem; flex: 1; text-align: center; padding: 2rem 0; }
+  .welcome-icon { width: 56px; height: 56px; background: rgba(29,158,117,0.1); border: 1px solid rgba(29,158,117,0.18); border-radius: 14px; display: flex; align-items: center; justify-content: center; }
+  .welcome h1 { font-family: var(--font-display); font-size: 1.8rem; color: var(--text); font-weight: 400; }
+  .welcome h1 em { color: var(--em); font-style: italic; }
+  .welcome p { font-size: 13px; color: var(--text2); max-width: 380px; line-height: 1.7; }
+  .suggestions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: .4rem; }
+  .chip { background: var(--surface2); border: 1px solid var(--border2); border-radius: 20px; padding: 6px 12px; font-size: 12px; color: var(--text2); cursor: pointer; transition: border-color .2s,color .2s; }
+  .chip:hover { border-color: var(--em); color: var(--em-mid); }
 
-  #input-area { padding:1rem 1.5rem 1.5rem; border-top:1px solid var(--border); flex-shrink:0; }
-  .input-box { background:var(--surface); border:1px solid var(--border2); border-radius:14px; display:flex; align-items:flex-end; gap:10px; padding:10px 12px; transition:border-color .2s; }
-  .input-box:focus-within { border-color:var(--em); }
-  #prompt-input { flex:1; background:transparent; border:none; outline:none; color:var(--text); font-family:var(--font-body); font-size:15px; resize:none; max-height:160px; line-height:1.5; padding:4px 0; }
-  #prompt-input::placeholder { color:var(--text3); }
-  #send-btn { width:36px; height:36px; background:var(--em); border:none; border-radius:9px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:background .2s,transform .1s; }
-  #send-btn:hover { background:var(--em-dark); }
-  #send-btn:active { transform:scale(.93); }
-  #send-btn:disabled { background:var(--surface3); cursor:not-allowed; }
-  .input-hint { font-size:11px; color:var(--text3); margin-top:8px; text-align:center; }
+  .message { display: flex; gap: 9px; align-items: flex-start; animation: fadeUp .25s ease; }
+  @keyframes fadeUp { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
+  .message.user { flex-direction: row-reverse; }
+  .avatar { width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 500; }
+  .avatar.ai { background: var(--em); color: white; font-family: var(--font-display); font-size: 13px; }
+  .avatar.user { background: var(--surface3); color: var(--text2); }
+  .bubble { max-width: 78%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.75; }
+  .message.user .bubble { background: var(--surface2); border: 1px solid var(--border2); color: var(--text); border-radius: 12px 3px 12px 12px; }
+  .message.ai .bubble { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 3px 12px 12px 12px; }
+  .meta-pill { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 10px; color: var(--text3); background: var(--surface3); border-radius: 20px; padding: 2px 7px; margin-top: 5px; }
+  .mpill-dot { width: 4px; height: 4px; border-radius: 50%; }
 
-  pre { background:var(--surface3); border-radius:8px; padding:12px; overflow-x:auto; font-family:var(--font-mono); font-size:12px; margin:8px 0; white-space:pre-wrap; }
-  code { font-family:var(--font-mono); font-size:13px; background:var(--surface3); padding:2px 5px; border-radius:4px; }
-  strong { color:var(--em-mid); font-weight:500; }
+  .typing-indicator { display: flex; gap: 3px; align-items: center; padding: 4px 2px; }
+  .typing-indicator span { width: 5px; height: 5px; border-radius: 50%; background: var(--em); animation: bounce 1.2s infinite; }
+  .typing-indicator span:nth-child(2) { animation-delay: .2s; }
+  .typing-indicator span:nth-child(3) { animation-delay: .4s; }
+  @keyframes bounce { 0%,60%,100%{transform:translateY(0);opacity:.4} 30%{transform:translateY(-4px);opacity:1} }
+
+  #input-area { padding: .65rem 1.2rem .9rem; border-top: 1px solid var(--border); flex-shrink: 0; }
+  .input-box { background: var(--surface); border: 1px solid var(--border2); border-radius: 11px; display: flex; align-items: flex-end; gap: 7px; padding: 8px 9px; transition: border-color .2s; }
+  .input-box:focus-within { border-color: rgba(29,158,117,0.35); }
+  #prompt-input { flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-family: var(--font-body); font-size: 14px; resize: none; max-height: 130px; line-height: 1.5; padding: 3px 4px; }
+  #prompt-input::placeholder { color: var(--text3); }
+  #send-btn { width: 32px; height: 32px; background: var(--em); border: none; border-radius: 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background .2s,transform .1s; }
+  #send-btn:hover { background: var(--em-dark); }
+  #send-btn:active { transform: scale(.92); }
+  #send-btn:disabled { background: var(--surface3); cursor: not-allowed; }
+  .input-hint { font-size: 10px; color: var(--text3); margin-top: 5px; text-align: center; }
+
+  pre { background: var(--surface3); border-radius: 7px; padding: 10px; overflow-x: auto; font-family: var(--font-mono); font-size: 12px; margin: 6px 0; white-space: pre-wrap; }
+  code { font-family: var(--font-mono); font-size: 12px; background: var(--surface3); padding: 2px 4px; border-radius: 3px; }
+  strong { color: var(--em-mid); font-weight: 500; }
+
+  @media (max-width: 600px) {
+    #sidebar { display: none; }
+    .bubble { max-width: 88%; }
+  }
 </style>
 </head>
 <body>
-<div id="app">
-  <header>
-    <div class="header-left">
-      <div class="logo-mark">
-        <svg width="18" height="18" viewBox="0 0 32 32" fill="none">
-          <circle cx="16" cy="16" r="3" fill="white"/>
-          <circle cx="16" cy="7" r="2" fill="white" opacity=".9"/>
-          <circle cx="23.6" cy="11" r="2" fill="white" opacity=".9"/>
-          <circle cx="23.6" cy="21" r="2" fill="white" opacity=".9"/>
-          <circle cx="16" cy="25" r="2" fill="white" opacity=".9"/>
-          <circle cx="8.4" cy="21" r="2" fill="white" opacity=".9"/>
-          <circle cx="8.4" cy="11" r="2" fill="white" opacity=".9"/>
-          <line x1="16" y1="16" x2="16" y2="9" stroke="white" stroke-width="1" opacity=".5"/>
-          <line x1="16" y1="16" x2="22.3" y2="12.6" stroke="white" stroke-width="1" opacity=".5"/>
-          <line x1="16" y1="16" x2="22.3" y2="19.4" stroke="white" stroke-width="1" opacity=".5"/>
-          <line x1="16" y1="16" x2="16" y2="23" stroke="white" stroke-width="1" opacity=".5"/>
-          <line x1="16" y1="16" x2="9.7" y2="19.4" stroke="white" stroke-width="1" opacity=".5"/>
-          <line x1="16" y1="16" x2="9.7" y2="12.6" stroke="white" stroke-width="1" opacity=".5"/>
-        </svg>
-      </div>
-      <span class="header-name">Orquesta</span>
-    </div>
-    <div class="model-badge">
-      <div class="mbadge-dot" id="model-dot"></div>
-      <span id="active-model-label">listo</span>
-    </div>
-  </header>
+<div id="shell">
 
-  <div id="messages">
-    <div class="welcome" id="welcome">
-      <div class="welcome-icon">
-        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-          <circle cx="16" cy="16" r="3.5" fill="#1D9E75"/>
-          <circle cx="16" cy="7" r="2.2" fill="#1D9E75" opacity=".8"/>
-          <circle cx="23.6" cy="11" r="2.2" fill="#1D9E75" opacity=".8"/>
-          <circle cx="23.6" cy="21" r="2.2" fill="#1D9E75" opacity=".8"/>
-          <circle cx="16" cy="25" r="2.2" fill="#1D9E75" opacity=".8"/>
-          <circle cx="8.4" cy="21" r="2.2" fill="#1D9E75" opacity=".8"/>
-          <circle cx="8.4" cy="11" r="2.2" fill="#1D9E75" opacity=".8"/>
-          <line x1="16" y1="16" x2="16" y2="9.2" stroke="#1D9E75" stroke-width="1" opacity=".4"/>
-          <line x1="16" y1="16" x2="22.3" y2="12.6" stroke="#1D9E75" stroke-width="1" opacity=".4"/>
-          <line x1="16" y1="16" x2="22.3" y2="19.4" stroke="#1D9E75" stroke-width="1" opacity=".4"/>
-          <line x1="16" y1="16" x2="16" y2="22.8" stroke="#1D9E75" stroke-width="1" opacity=".4"/>
-          <line x1="16" y1="16" x2="9.7" y2="19.4" stroke="#1D9E75" stroke-width="1" opacity=".4"/>
-          <line x1="16" y1="16" x2="9.7" y2="12.6" stroke="#1D9E75" stroke-width="1" opacity=".4"/>
-        </svg>
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo-mark">
+        <svg width="14" height="14" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="3" fill="white"/><circle cx="16" cy="7" r="2" fill="white" opacity=".9"/><circle cx="23.6" cy="11" r="2" fill="white" opacity=".9"/><circle cx="23.6" cy="21" r="2" fill="white" opacity=".9"/><circle cx="16" cy="25" r="2" fill="white" opacity=".9"/><circle cx="8.4" cy="21" r="2" fill="white" opacity=".9"/><circle cx="8.4" cy="11" r="2" fill="white" opacity=".9"/><line x1="16" y1="16" x2="16" y2="9" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="22.3" y2="12.6" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="22.3" y2="19.4" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="16" y2="23" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="9.7" y2="19.4" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="9.7" y2="12.6" stroke="white" stroke-width="1" opacity=".5"/></svg>
       </div>
-      <h1>Hola, soy <em>Orquesta</em></h1>
-      <p>Preguntá cualquier cosa. Noticias de hoy, código, análisis — elijo la mejor IA automáticamente.</p>
-      <div class="suggestions">
-        <div class="chip" onclick="useSuggestion(this)">¿Cómo salió Argentina hoy?</div>
-        <div class="chip" onclick="useSuggestion(this)">¿Cuál es el precio del dólar hoy?</div>
-        <div class="chip" onclick="useSuggestion(this)">Escribime una función Python para leer un CSV</div>
-        <div class="chip" onclick="useSuggestion(this)">Redactá un email para pedir un aumento</div>
-        <div class="chip" onclick="useSuggestion(this)">Últimas noticias de inteligencia artificial</div>
-        <div class="chip" onclick="useSuggestion(this)">Analizá pros y contras de invertir en crypto</div>
-      </div>
+      <span class="sidebar-logo-name">Orquesta</span>
     </div>
+    <button class="new-chat-btn" onclick="newChat()">
+      <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><line x1="7" y1="1" x2="7" y2="13" stroke="white" stroke-width="1.8" stroke-linecap="round"/><line x1="1" y1="7" x2="13" y2="7" stroke="white" stroke-width="1.8" stroke-linecap="round"/></svg>
+      Nueva conversación
+    </button>
+    <div class="history-label">Historial</div>
+    <div id="history-list"></div>
+    <div class="sidebar-footer">Orquesta fusiona múltiples IAs para darte siempre la mejor respuesta.</div>
   </div>
 
-  <div id="input-area">
-    <div class="input-box">
-      <textarea id="prompt-input" placeholder="Preguntá cualquier cosa..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
-      <button id="send-btn" onclick="sendMessage()">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M2 8L14 8M14 8L9 3M14 8L9 13" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
+  <div id="main">
+    <header>
+      <div class="header-left">
+        <button id="sidebar-toggle" onclick="toggleSidebar()"><span></span><span></span><span></span></button>
+      </div>
+      <div class="model-badge">
+        <div class="mbadge-dot" id="model-dot"></div>
+        <span id="active-model-label">listo</span>
+      </div>
+    </header>
+
+    <div id="banner">
+      <div class="banner-icon">
+        <svg width="16" height="16" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="3.5" fill="white"/><circle cx="16" cy="7" r="2.2" fill="white" opacity=".9"/><circle cx="23.6" cy="11" r="2.2" fill="white" opacity=".9"/><circle cx="23.6" cy="21" r="2.2" fill="white" opacity=".9"/><circle cx="16" cy="25" r="2.2" fill="white" opacity=".9"/><circle cx="8.4" cy="21" r="2.2" fill="white" opacity=".9"/><circle cx="8.4" cy="11" r="2.2" fill="white" opacity=".9"/><line x1="16" y1="16" x2="16" y2="9.2" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="22.3" y2="12.6" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="22.3" y2="19.4" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="16" y2="22.8" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="9.7" y2="19.4" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="9.7" y2="12.6" stroke="white" stroke-width="1" opacity=".5"/></svg>
+      </div>
+      <div class="banner-content">
+        <div class="banner-title">Orquesta — La fusión de las mejores IAs</div>
+        <div class="banner-text">No es una sola IA. Es un sistema inteligente que analiza tu pregunta y elige automáticamente el mejor modelo para responderte.</div>
+        <div class="banner-models">
+          <span class="banner-pill">Groq · Llama 3.3</span>
+          <span class="banner-pill">Groq · Mixtral</span>
+          <span class="banner-pill">Tavily · Web</span>
+          <span class="banner-pill">+ más modelos</span>
+        </div>
+      </div>
+      <button class="banner-close" onclick="closeBanner()">×</button>
     </div>
-    <p class="input-hint">Enter para enviar · Shift+Enter para nueva línea</p>
+
+    <div class="disclaimer-bar">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#EF9F27" stroke-width="1.2"/><line x1="8" y1="5" x2="8" y2="8.5" stroke="#EF9F27" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="11" r=".8" fill="#EF9F27"/></svg>
+      Orquesta puede cometer errores. Verificá información importante antes de tomar decisiones.
+    </div>
+
+    <div id="messages">
+      <div class="welcome" id="welcome">
+        <div class="welcome-icon">
+          <svg width="26" height="26" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="3.5" fill="#1D9E75"/><circle cx="16" cy="7" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="23.6" cy="11" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="23.6" cy="21" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="16" cy="25" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="8.4" cy="21" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="8.4" cy="11" r="2.2" fill="#1D9E75" opacity=".8"/><line x1="16" y1="16" x2="16" y2="9.2" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="22.3" y2="12.6" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="22.3" y2="19.4" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="16" y2="22.8" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="9.7" y2="19.4" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="9.7" y2="12.6" stroke="#1D9E75" stroke-width="1" opacity=".4"/></svg>
+        </div>
+        <h1>Hola, soy <em>Orquesta</em></h1>
+        <p>Preguntá cualquier cosa. Elijo automáticamente la mejor IA para cada respuesta.</p>
+        <div class="suggestions">
+          <div class="chip" onclick="useSuggestion(this)">¿Cómo salió Argentina hoy?</div>
+          <div class="chip" onclick="useSuggestion(this)">¿Cuál es el precio del dólar?</div>
+          <div class="chip" onclick="useSuggestion(this)">Escribime una función en Python</div>
+          <div class="chip" onclick="useSuggestion(this)">Redactá un email para pedir un aumento</div>
+          <div class="chip" onclick="useSuggestion(this)">Últimas noticias de tecnología</div>
+          <div class="chip" onclick="useSuggestion(this)">Pros y contras de invertir en crypto</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="input-area">
+      <div class="input-box">
+        <textarea id="prompt-input" placeholder="Preguntá cualquier cosa..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+        <button id="send-btn" onclick="sendMessage()">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 8L14 8M14 8L9 3M14 8L9 13" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <p class="input-hint">Enter para enviar · Shift+Enter para nueva línea</p>
+    </div>
   </div>
 </div>
 
 <script>
-  let isLoading = false;
+let isLoading = false;
+let conversationHistory = [];
+let chatSessions = JSON.parse(localStorage.getItem('orq_sessions') || '[]');
+let currentSessionId = null;
+let sidebarOpen = true;
 
-  function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px'; }
-  function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
-  function hideWelcome() { document.getElementById('welcome')?.remove(); }
-  function useSuggestion(el) { document.getElementById('prompt-input').value = el.textContent; sendMessage(); }
+function toggleSidebar() {
+  sidebarOpen = !sidebarOpen;
+  document.getElementById('sidebar').classList.toggle('collapsed', !sidebarOpen);
+}
 
-  function setModelBadge(label) {
-    const isRT = label.includes('tavily');
-    document.getElementById('active-model-label').textContent = label;
-    document.getElementById('active-model-label').style.color = isRT ? 'var(--amber)' : 'var(--em-mid)';
-    document.getElementById('model-dot').style.background = isRT ? 'var(--amber)' : 'var(--em)';
-  }
+function closeBanner() {
+  document.getElementById('banner').classList.add('hidden');
+  localStorage.setItem('orq_banner', '1');
+}
 
-  function addMessage(role, content, meta) {
-    hideWelcome();
-    const wrap = document.getElementById('messages');
-    const div = document.createElement('div');
-    div.className = `message ${role}`;
-    const avatar = document.createElement('div');
-    avatar.className = `avatar ${role === 'ai' ? 'ai' : 'user'}`;
-    avatar.textContent = role === 'ai' ? 'O' : 'Vos';
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble';
-    if (content === 'typing') {
-      bubble.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
-      div.id = 'typing-msg';
-    } else {
-      bubble.innerHTML = formatText(content);
-      if (meta) {
-        const isRT = meta.label.includes('tavily');
-        const color = isRT ? 'var(--amber)' : 'var(--em)';
-        const pill = document.createElement('div');
-        pill.className = 'meta-pill';
-        pill.innerHTML = `<div class="mpill-dot" style="background:${color}"></div>${meta.label} · ${meta.ms}ms`;
-        bubble.appendChild(pill);
-      }
+function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 130) + 'px'; }
+function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
+function hideWelcome() { document.getElementById('welcome')?.remove(); }
+function useSuggestion(el) { document.getElementById('prompt-input').value = el.textContent; sendMessage(); }
+
+function setModelBadge(label) {
+  const isRT = label && label.includes('tavily');
+  document.getElementById('active-model-label').textContent = label || 'listo';
+  document.getElementById('active-model-label').style.color = isRT ? 'var(--amber)' : 'var(--em-mid)';
+  document.getElementById('model-dot').style.background = isRT ? 'var(--amber)' : 'var(--em)';
+}
+
+function addMessage(role, content, meta) {
+  hideWelcome();
+  const wrap = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = `message ${role}`;
+  const avatar = document.createElement('div');
+  avatar.className = `avatar ${role === 'ai' ? 'ai' : 'user'}`;
+  avatar.textContent = role === 'ai' ? 'O' : 'Vos';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  if (content === 'typing') {
+    bubble.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+    div.id = 'typing-msg';
+  } else {
+    bubble.innerHTML = formatText(content);
+    if (meta) {
+      const isRT = meta.label && meta.label.includes('tavily');
+      const color = isRT ? 'var(--amber)' : 'var(--em)';
+      const pill = document.createElement('div');
+      pill.className = 'meta-pill';
+      pill.innerHTML = `<div class="mpill-dot" style="background:${color}"></div>${meta.label} · ${meta.ms}ms`;
+      bubble.appendChild(pill);
     }
-    div.appendChild(avatar);
-    div.appendChild(bubble);
-    wrap.appendChild(div);
-    wrap.scrollTop = wrap.scrollHeight;
+  }
+  div.appendChild(avatar);
+  div.appendChild(bubble);
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function formatText(t) {
+  return t
+    .replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em style="color:var(--text2)">$1</em>')
+    .replace(/^### (.+)$/gm, '<strong style="display:block;margin:10px 0 3px;color:var(--text)">$1</strong>')
+    .replace(/^## (.+)$/gm, '<strong style="font-size:1.05em;display:block;margin:12px 0 4px;color:var(--text)">$1</strong>')
+    .replace(/^- (.+)$/gm, '<span style="display:block;padding-left:10px;margin:2px 0">· $1</span>')
+    .replace(/\n/g, '<br>');
+}
+
+function saveSession() {
+  if (!currentSessionId || conversationHistory.length === 0) return;
+  const firstUser = conversationHistory.find(m => m.role === 'user');
+  const title = firstUser ? firstUser.content.slice(0, 42) : 'Conversación';
+  const session = { id: currentSessionId, title, messages: conversationHistory, ts: Date.now() };
+  const idx = chatSessions.findIndex(s => s.id === currentSessionId);
+  if (idx >= 0) chatSessions[idx] = session;
+  else chatSessions.unshift(session);
+  chatSessions = chatSessions.slice(0, 50);
+  localStorage.setItem('orq_sessions', JSON.stringify(chatSessions));
+  renderHistory();
+}
+
+function renderHistory() {
+  const list = document.getElementById('history-list');
+  list.innerHTML = '';
+  if (!chatSessions.length) {
+    list.innerHTML = '<div style="font-size:11px;color:var(--text3);padding:.4rem .9rem;">Sin conversaciones aún</div>';
+    return;
+  }
+  chatSessions.forEach(s => {
+    const item = document.createElement('div');
+    item.className = 'history-item' + (s.id === currentSessionId ? ' active' : '');
+    item.innerHTML = `<div class="history-dot"></div>${s.title}`;
+    item.onclick = () => loadSession(s.id);
+    list.appendChild(item);
+  });
+}
+
+function loadSession(id) {
+  const session = chatSessions.find(s => s.id === id);
+  if (!session) return;
+  currentSessionId = id;
+  conversationHistory = [...session.messages];
+  const wrap = document.getElementById('messages');
+  wrap.innerHTML = '';
+  session.messages.forEach(m => addMessage(m.role === 'user' ? 'user' : 'ai', m.content));
+  renderHistory();
+}
+
+function newChat() {
+  currentSessionId = 'session_' + Date.now();
+  conversationHistory = [];
+  document.getElementById('messages').innerHTML = `
+    <div class="welcome" id="welcome">
+      <div class="welcome-icon"><svg width="26" height="26" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="3.5" fill="#1D9E75"/></svg></div>
+      <h1>Nueva <em>conversación</em></h1>
+      <p>Preguntá cualquier cosa.</p>
+    </div>`;
+  setModelBadge('listo');
+  renderHistory();
+  document.getElementById('prompt-input').focus();
+}
+
+async function sendMessage() {
+  if (isLoading) return;
+  const input = document.getElementById('prompt-input');
+  const prompt = input.value.trim();
+  if (!prompt) return;
+  if (!currentSessionId) currentSessionId = 'session_' + Date.now();
+
+  input.value = ''; input.style.height = 'auto';
+  isLoading = true;
+  document.getElementById('send-btn').disabled = true;
+
+  conversationHistory.push({ role: 'user', content: prompt });
+  addMessage('user', prompt);
+  addMessage('ai', 'typing');
+
+  const t0 = Date.now();
+  try {
+    const res = await fetch('/api/orchestrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, history: conversationHistory }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Error del servidor');
+    const ms = Date.now() - t0;
+    setModelBadge(data.model_label);
+    document.getElementById('typing-msg')?.remove();
+    addMessage('ai', data.result, { label: data.model_label, ms });
+    conversationHistory.push({ role: 'assistant', content: data.result });
+    saveSession();
+  } catch (err) {
+    document.getElementById('typing-msg')?.remove();
+    addMessage('ai', `Error: ${err.message}`);
   }
 
-  function formatText(t) {
-    return t
-      .replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.*?)\*/g, '<em style="color:var(--text2)">$1</em>')
-      .replace(/^### (.+)$/gm, '<strong style="font-size:1em;display:block;margin:10px 0 3px;color:var(--text)">$1</strong>')
-      .replace(/^## (.+)$/gm, '<strong style="font-size:1.05em;display:block;margin:12px 0 4px;color:var(--text)">$1</strong>')
-      .replace(/^- (.+)$/gm, '<span style="display:block;padding-left:10px;margin:2px 0">· $1</span>')
-      .replace(/\n/g, '<br>');
-  }
+  isLoading = false;
+  document.getElementById('send-btn').disabled = false;
+  document.getElementById('prompt-input').focus();
+}
 
-  async function sendMessage() {
-    if (isLoading) return;
-    const input = document.getElementById('prompt-input');
-    const prompt = input.value.trim();
-    if (!prompt) return;
-    input.value = ''; input.style.height = 'auto';
-    isLoading = true;
-    document.getElementById('send-btn').disabled = true;
-    addMessage('user', prompt);
-    addMessage('ai', 'typing');
-    const t0 = Date.now();
-    try {
-      const res = await fetch('/api/orchestrate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Error del servidor');
-      const ms = Date.now() - t0;
-      setModelBadge(data.model_label);
-      document.getElementById('typing-msg')?.remove();
-      addMessage('ai', data.result, { label: data.model_label, ms });
-    } catch (err) {
-      document.getElementById('typing-msg')?.remove();
-      addMessage('ai', `Error: ${err.message}`);
-    }
-    isLoading = false;
-    document.getElementById('send-btn').disabled = false;
-    document.getElementById('prompt-input').focus();
-  }
+window.addEventListener('load', () => {
+  currentSessionId = 'session_' + Date.now();
+  if (localStorage.getItem('orq_banner')) document.getElementById('banner').classList.add('hidden');
+  renderHistory();
+  document.getElementById('prompt-input').focus();
+});
 </script>
 </body>
 </html>
