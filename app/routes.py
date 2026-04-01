@@ -1,17 +1,21 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 import httpx
 import os
 import time
 import base64
 import json
+import io
 
 router = APIRouter()
 
 GROQ_API_KEY    = os.getenv("GROQ_API_KEY", "")
 TAVILY_API_KEY  = os.getenv("TAVILY_API_KEY", "")
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
+
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_IMAGE_MODEL = "gemini-2.0-flash-exp-image-generation"
 
 SYSTEM_PROMPTS = {
     "general": """Eres Orquesta, un asistente de IA de nivel experto. Tu objetivo es dar respuestas de la más alta calidad posible, como lo haría un especialista senior en el tema consultado.
@@ -164,8 +168,8 @@ def generate_image_url(prompt: str) -> str:
 
 
 async def call_gemini_vision(prompt: str, image_data: str, mime_type: str) -> str:
-    """Analyze image or document with Gemini Flash"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    """Analyze image or document with Gemini"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [{
             "parts": [
@@ -175,7 +179,7 @@ async def call_gemini_vision(prompt: str, image_data: str, mime_type: str) -> st
         }],
         "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.4}
     }
-    async with httpx.AsyncClient(timeout=45) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         res = await client.post(url, json=payload)
         data = res.json()
         if not res.is_success:
@@ -184,8 +188,8 @@ async def call_gemini_vision(prompt: str, image_data: str, mime_type: str) -> st
 
 
 async def call_gemini_text(prompt: str, context: str) -> str:
-    """Process text documents with Gemini Flash"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    """Process text documents with Gemini"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     full_prompt = f"{SYSTEM_PROMPTS['general']}\n\nContenido del archivo:\n{context}\n\nConsulta del usuario: {prompt}"
     payload = {
         "contents": [{"parts": [{"text": full_prompt}]}],
@@ -197,6 +201,132 @@ async def call_gemini_text(prompt: str, context: str) -> str:
         if not res.is_success:
             raise HTTPException(502, detail=str(data))
         return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+async def gemini_generate_image(prompt: str) -> str:
+    """Genera una imagen desde texto usando Gemini Image Generation. Retorna base64."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        res = await client.post(url, json=payload)
+        data = res.json()
+        if not res.is_success:
+            raise HTTPException(502, detail=str(data))
+        for part in data["candidates"][0]["content"]["parts"]:
+            if "inlineData" in part:
+                return part["inlineData"]["data"]
+        raise HTTPException(502, detail="Gemini no devolvió imagen")
+
+
+async def gemini_edit_image(prompt: str, image_data: str, mime_type: str) -> str:
+    """Edita una imagen con instrucciones en lenguaje natural. Retorna base64."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": mime_type, "data": image_data}},
+                {"text": prompt}
+            ]
+        }],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        res = await client.post(url, json=payload)
+        data = res.json()
+        if not res.is_success:
+            raise HTTPException(502, detail=str(data))
+        for part in data["candidates"][0]["content"]["parts"]:
+            if "inlineData" in part:
+                return part["inlineData"]["data"]
+        raise HTTPException(502, detail="Gemini no devolvió imagen editada")
+
+
+async def gemini_fuse_images(prompt: str, images: list) -> str:
+    """Fusiona múltiples imágenes con Gemini. images = lista de (mime_type, base64). Retorna base64."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    parts = []
+    for mime_type, image_data in images:
+        parts.append({"inline_data": {"mime_type": mime_type, "data": image_data}})
+    parts.append({"text": prompt})
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}
+    }
+    async with httpx.AsyncClient(timeout=90) as client:
+        res = await client.post(url, json=payload)
+        data = res.json()
+        if not res.is_success:
+            raise HTTPException(502, detail=str(data))
+        for part in data["candidates"][0]["content"]["parts"]:
+            if "inlineData" in part:
+                return part["inlineData"]["data"]
+        raise HTTPException(502, detail="Gemini no devolvió imagen fusionada")
+
+
+def pillow_edit_image(content: bytes, prompt: str) -> bytes:
+    """Edición local con Pillow: redimensionar, recortar, rotar, filtros, etc."""
+    try:
+        from PIL import Image, ImageFilter, ImageEnhance
+        import re
+        img = Image.open(io.BytesIO(content))
+        p = prompt.lower()
+
+        # Redimensionar
+        resize_match = re.search(r'(\d+)\s*[xX×]\s*(\d+)', prompt)
+        if resize_match or any(k in p for k in ["redimensiona", "resize", "tamaño", "escala", "scale"]):
+            if resize_match:
+                w, h = int(resize_match.group(1)), int(resize_match.group(2))
+            else:
+                w, h = img.width // 2, img.height // 2
+            img = img.resize((w, h), Image.LANCZOS)
+
+        # Rotar
+        elif any(k in p for k in ["rota", "rotate", "gira"]):
+            angle_match = re.search(r'(\d+)\s*°?', prompt)
+            angle = int(angle_match.group(1)) if angle_match else 90
+            img = img.rotate(angle, expand=True)
+
+        # Recortar al centro
+        elif any(k in p for k in ["recorta", "crop", "centra"]):
+            w, h = img.size
+            new_w, new_h = w // 2, h // 2
+            left = (w - new_w) // 2
+            top = (h - new_h) // 2
+            img = img.crop((left, top, left + new_w, top + new_h))
+
+        # Blanco y negro
+        elif any(k in p for k in ["blanco y negro", "grayscale", "grises", "b&n", "b/n"]):
+            img = img.convert("L").convert("RGB")
+
+        # Desenfoque
+        elif any(k in p for k in ["desenfoca", "blur", "difumina"]):
+            img = img.filter(ImageFilter.GaussianBlur(radius=5))
+
+        # Nitidez
+        elif any(k in p for k in ["nitidez", "sharpen", "enfoca"]):
+            img = img.filter(ImageFilter.SHARPEN)
+
+        # Brillo
+        elif any(k in p for k in ["brillo", "brightness", "ilumina"]):
+            img = ImageEnhance.Brightness(img).enhance(1.5)
+
+        # Contraste
+        elif any(k in p for k in ["contraste", "contrast"]):
+            img = ImageEnhance.Contrast(img).enhance(1.5)
+
+        # Voltear horizontal
+        elif any(k in p for k in ["voltea", "flip", "espejo", "mirror"]):
+            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+
+        output = io.BytesIO()
+        img.save(output, format="PNG")
+        return output.getvalue()
+
+    except ImportError:
+        raise HTTPException(500, detail="Pillow no está instalado. Agregá 'Pillow' a requirements.txt")
 
 
 class HistoryMessage(BaseModel):
@@ -226,7 +356,6 @@ async def orchestrate(req: PromptRequest):
     t0 = time.time()
     task = classify(req.prompt)
 
-    # Modo código fuerza el task type
     if req.mode == "codigo":
         task = "code"
 
@@ -273,13 +402,54 @@ async def upload_file(
     mime = file.content_type or ""
 
     try:
-        # Imágenes → Gemini Vision
+        # Imágenes → detectar si es edición local, edición Gemini, o análisis
         if mime.startswith("image/") or any(fname.endswith(x) for x in [".jpg",".jpeg",".png",".gif",".webp"]):
             b64 = base64.b64encode(content).decode()
-            result = await call_gemini_vision(prompt, b64, mime or "image/jpeg")
-            label = "gemini · visión"
+            p = prompt.lower()
 
-        # PDF → Gemini Vision (lee PDF como imagen)
+            # Edición local con Pillow
+            if any(k in p for k in ["redimensiona","resize","tamaño","rota","rotate","recorta","crop",
+                                      "blanco y negro","grayscale","grises","desenfoca","blur",
+                                      "nitidez","sharpen","brillo","brightness","contraste","contrast",
+                                      "voltea","flip","espejo","mirror","gira"]):
+                edited = pillow_edit_image(content, prompt)
+                b64_result = base64.b64encode(edited).decode()
+                return {
+                    "result": f"✅ Imagen editada correctamente.",
+                    "task_type": "image_edit",
+                    "model_label": "pillow · edición local",
+                    "latency_ms": int((time.time() - t0) * 1000),
+                    "image_url": f"data:image/png;base64,{b64_result}",
+                    "filename": file.filename,
+                }
+
+            # Edición creativa con Gemini
+            elif any(k in p for k in ["edita","modifica","cambia","agrega","quita","elimina","añade",
+                                        "edit","modify","change","add","remove","transform","convierte",
+                                        "pon","ponle","hazlo","hazla","similar","similares","campaña"]):
+                b64_result = await gemini_edit_image(prompt, b64, mime or "image/jpeg")
+                return {
+                    "result": f"✅ Imagen editada con Gemini.",
+                    "task_type": "image_edit",
+                    "model_label": "gemini · edición de imagen",
+                    "latency_ms": int((time.time() - t0) * 1000),
+                    "image_url": f"data:image/png;base64,{b64_result}",
+                    "filename": file.filename,
+                }
+
+            # Análisis de imagen
+            else:
+                result = await call_gemini_vision(prompt, b64, mime or "image/jpeg")
+                return {
+                    "result": result,
+                    "task_type": "file",
+                    "model_label": "gemini · visión",
+                    "latency_ms": int((time.time() - t0) * 1000),
+                    "image_url": "",
+                    "filename": file.filename,
+                }
+
+        # PDF → Gemini Vision
         elif fname.endswith(".pdf") or mime == "application/pdf":
             b64 = base64.b64encode(content).decode()
             result = await call_gemini_vision(prompt, b64, "application/pdf")
@@ -291,9 +461,8 @@ async def upload_file(
             result = await call_gemini_text(prompt, text)
             label = "gemini · texto"
 
-        # Word / Excel → extraer texto básico
+        # Word / Excel
         elif any(fname.endswith(x) for x in [".docx",".xlsx",".xls",".doc"]):
-            # Intentar leer como texto, si falla explicar
             try:
                 text = content.decode("utf-8", errors="ignore")[:8000]
                 result = await call_gemini_text(prompt, f"[Archivo Office] {text}")
@@ -305,6 +474,8 @@ async def upload_file(
             result = f"Tipo de archivo no soportado: {fname}. Soportados: imágenes, PDF, TXT, CSV, JSON, código fuente."
             label = "orquesta"
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(502, detail=f"Error procesando archivo: {str(e)}")
 
@@ -315,6 +486,44 @@ async def upload_file(
         "latency_ms": int((time.time() - t0) * 1000),
         "image_url": "",
         "filename": file.filename,
+    }
+
+
+@router.post("/generate-image")
+async def generate_image_gemini(prompt: str = Form(...)):
+    """Genera una imagen desde texto usando Gemini."""
+    t0 = time.time()
+    b64 = await gemini_generate_image(prompt)
+    return {
+        "result": f"✅ Imagen generada con Gemini para: *{prompt}*",
+        "task_type": "image_generate",
+        "model_label": "gemini · generación de imagen",
+        "latency_ms": int((time.time() - t0) * 1000),
+        "image_url": f"data:image/png;base64,{b64}",
+    }
+
+
+@router.post("/fuse-images")
+async def fuse_images(
+    prompt: str = Form(default="Fusioná estas imágenes de forma creativa"),
+    files: list[UploadFile] = File(...)
+):
+    """Fusiona múltiples imágenes con Gemini."""
+    t0 = time.time()
+    if len(files) < 2:
+        raise HTTPException(400, "Se necesitan al menos 2 imágenes para fusionar")
+    images = []
+    for f in files[:4]:  # máximo 4 imágenes
+        content = await f.read()
+        b64 = base64.b64encode(content).decode()
+        images.append((f.content_type or "image/jpeg", b64))
+    b64_result = await gemini_fuse_images(prompt, images)
+    return {
+        "result": f"✅ Imágenes fusionadas con Gemini.",
+        "task_type": "image_fuse",
+        "model_label": "gemini · fusión de imágenes",
+        "latency_ms": int((time.time() - t0) * 1000),
+        "image_url": f"data:image/png;base64,{b64_result}",
     }
 
 
