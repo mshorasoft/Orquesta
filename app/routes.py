@@ -10,27 +10,53 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 REALTIME_KW = [
+    # Tiempo
     "hoy", "ahora", "actual", "actualmente", "últimas", "ultimo", "última",
-    "noticias", "precio", "cotización", "dólar", "euro", "partido", "resultado",
-    "formación", "alineación", "ganó", "perdió", "empató", "score", "gol",
-    "clima", "temperatura", "pronóstico", "mañana", "esta semana", "esta noche",
-    "ayer", "reciente", "nuevo", "lanzó", "salió", "murió", "nació",
-    "cuánto cuesta", "cuánto vale", "today", "now", "latest", "current",
-    "news", "price", "score", "weather", "result", "died", "won", "lost",
+    "hoy dia", "esta semana", "esta noche", "ayer", "mañana", "reciente",
+    "today", "now", "latest", "current", "yesterday", "tonight", "this week",
+    # Deportes
+    "partido", "resultado", "formación", "alineación", "ganó", "perdió",
+    "empató", "score", "gol", "goles", "fixture", "tabla", "clasificación",
+    "champions", "copa", "mundial", "liga", "torneo", "eliminatorias",
+    "vs", "contra", "jugó", "juega", "jugarán", "derrota", "victoria",
+    # Selecciones y equipos comunes
+    "argentina", "brasil", "españa", "francia", "alemania", "inglaterra",
+    "uruguay", "colombia", "chile", "perú", "mexico", "zambia", "nigeria",
+    "real madrid", "barcelona", "boca", "river", "messi", "ronaldo",
+    # Economía
+    "precio", "cotización", "dólar", "euro", "peso", "bitcoin", "crypto",
+    "cuánto cuesta", "cuánto vale", "cotizan", "bolsa", "acciones", "nasdaq",
+    "price", "stock", "market", "exchange rate",
+    # Clima
+    "clima", "temperatura", "pronóstico", "lluvia", "weather", "forecast",
+    # Noticias
+    "noticias", "noticia", "news", "murió", "nació", "lanzó", "salió",
+    "eligieron", "ganaron", "perdieron", "anunció", "declaró",
+    # Entretenimiento actual
+    "estreno", "película", "serie", "album", "canción", "trending",
 ]
+
 CODE_KW = [
     "código", "code", "función", "function", "script", "python", "javascript",
     "typescript", "bug", "debug", "clase", "class", "algoritmo", "sql",
-    "html", "css", "api", "json", "regex", "bash",
+    "html", "css", "api", "json", "regex", "bash", "programa", "programar",
 ]
+
 ANALYSIS_KW = [
     "analiza", "compare", "compara", "evalúa", "pros", "contras",
     "explica en detalle", "razona", "diferencia entre", "ventajas", "desventajas",
+    "estrategia", "qué opinas", "qué pensás",
 ]
 
 
 def classify(prompt: str) -> str:
     p = prompt.lower()
+    # Detectar preguntas con "vs" o "contra" — casi siempre son deportes en tiempo real
+    if " vs " in p or " contra " in p:
+        return "realtime"
+    # Detectar "cómo salió / cómo le fue / qué pasó"
+    if any(x in p for x in ["cómo salió", "como salio", "cómo le fue", "qué pasó", "que paso", "cómo quedó", "como quedo"]):
+        return "realtime"
     if any(k in p for k in REALTIME_KW):
         return "realtime"
     if any(k in p for k in CODE_KW):
