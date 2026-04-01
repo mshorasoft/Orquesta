@@ -164,7 +164,7 @@ async def call_tavily(query: str) -> str:
 def generate_image_url_pollinations(prompt: str) -> str:
     clean_prompt = prompt + ", no watermark, no logo, no text overlay, clean image"
     encoded = urllib.parse.quote(clean_prompt)
-    return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true&nofeed=true&seed={int(time.time())}"
+    return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true&nofeed=true&model=flux&seed={int(time.time())}"
 
 async def call_gemini_vision(prompt: str, image_data: str, mime_type: str) -> str:
     """Analiza imagen o documento con Gemini"""
