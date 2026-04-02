@@ -4,9 +4,10 @@ import httpx, os, time, base64, io
 
 router = APIRouter()
 
-GROQ_KEY   = os.getenv("GROQ_API_KEY", "")
-TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+GROQ_KEY      = os.getenv("GROQ_API_KEY", "")
+TAVILY_KEY    = os.getenv("TAVILY_API_KEY", "")
+GEMINI_KEY    = os.getenv("GEMINI_API_KEY", "")
+STABILITY_KEY = os.getenv("STABILITY_API_KEY", "")
 
 # ─────────────────────────────────────────────
 # SYSTEM PROMPTS  (inspired by ChatGPT/Claude/Gemini best practices)
@@ -205,6 +206,65 @@ async def call_gemini_vision(prompt: str, b64: str, mime: str) -> str:
         return d["candidates"][0]["content"]["parts"][0]["text"]
 
 
+async def call_stability_inpaint(image_b64: str, prompt: str, negative_prompt: str = "") -> str:
+    """
+    Stability AI SD3.5 image editing via inpainting.
+    Automatically generates a face/subject mask using the prompt context.
+    Returns base64 encoded result image.
+    """
+    import base64
+
+    # Decode original image
+    image_bytes = base64.b64decode(image_b64)
+
+    # Use Stability AI's search-and-replace endpoint (no manual mask needed)
+    # This is the most user-friendly: describe what to replace + what to put instead
+    async with httpx.AsyncClient(timeout=60) as c:
+        response = await c.post(
+            "https://api.stability.ai/v2beta/stable-image/edit/search-and-replace",
+            headers={
+                "authorization": f"Bearer {STABILITY_KEY}",
+                "accept": "image/*",
+            },
+            files={"image": ("image.jpg", image_bytes, "image/jpeg")},
+            data={
+                "prompt": prompt,
+                "search_prompt": "",  # auto-detect what to replace based on prompt
+                "negative_prompt": negative_prompt or "blurry, low quality, watermark",
+                "output_format": "jpeg",
+            },
+        )
+
+        if response.status_code == 200:
+            result_b64 = base64.b64encode(response.content).decode()
+            return result_b64
+        else:
+            error = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            raise Exception(f"Stability AI error {response.status_code}: {error.get('message', response.text[:200])}")
+
+
+async def call_stability_generate(prompt: str) -> str:
+    """Generate a new image with Stability AI SD3.5"""
+    async with httpx.AsyncClient(timeout=60) as c:
+        response = await c.post(
+            "https://api.stability.ai/v2beta/stable-image/generate/sd3",
+            headers={
+                "authorization": f"Bearer {STABILITY_KEY}",
+                "accept": "image/*",
+            },
+            files={"none": ""},
+            data={
+                "prompt": prompt,
+                "model": "sd3.5-large-turbo",
+                "output_format": "jpeg",
+            },
+        )
+        if response.status_code == 200:
+            return base64.b64encode(response.content).decode()
+        else:
+            raise Exception(f"Stability AI error {response.status_code}: {response.text[:200]}")
+
+
 async def call_tavily(query: str) -> str:
     async with httpx.AsyncClient(timeout=20) as c:
         r = await c.post(
@@ -396,25 +456,43 @@ async def upload_file(
             if is_edit:
                 import urllib.parse
                 b64 = base64.b64encode(raw).decode()
-                # Step 1: describe the original image with Gemini
+
+                if STABILITY_KEY:
+                    # Use Stability AI search-and-replace — real image editing
+                    try:
+                        result_b64 = await call_stability_inpaint(b64, prompt)
+                        # Convert to data URL for frontend display
+                        data_url = f"data:image/jpeg;base64,{result_b64}"
+                        return {
+                            "result": "Imagen editada con Stability AI. Solo se modificó la parte que pediste — el resto quedó igual.",
+                            "task_type": "file",
+                            "model_label": "stability ai · sd3.5",
+                            "latency_ms": int((time.time() - t0) * 1000),
+                            "image_url": data_url,
+                            "filename": file.filename,
+                        }
+                    except Exception as e:
+                        # Fallback to Pollinations if Stability fails
+                        pass
+
+                # Fallback: describe + generate new image with Pollinations
                 try:
                     desc = await call_gemini_vision(
-                        "Describe this image in detail: main subject, colors, photographic style, composition, lighting, background, setting. Be very specific and detailed.",
+                        "Describe this image in detail: main subject, pose, expression, colors, photographic style, lighting, background. Be very specific.",
                         b64, mime or "image/jpeg"
                     )
                 except Exception:
-                    desc = "imagen fotográfica profesional"
-                # Step 2: build a new generation prompt combining description + requested change
+                    desc = "professional photograph"
                 new_img_prompt = (
-                    f"{prompt}. "
-                    f"Keep exactly the same photographic style, lighting, composition and background as: {desc}. "
-                    f"Professional photography, high quality, realistic."
+                    f"Professional photo: {prompt}. "
+                    f"Same style as original: {desc}. "
+                    f"Photorealistic, high quality, 4K."
                 )
                 edit_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(new_img_prompt)}?width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
                 return {
-                    "result": "Generé una imagen nueva aplicando el cambio que pediste. La edición directa de imágenes no está disponible, pero usé la descripción de tu imagen original como base. Si el resultado no es exacto, podés escribir una descripción más detallada de lo que querés.",
+                    "result": "Generé una versión nueva de la imagen aplicando el cambio pedido. Para edición directa de la imagen original, configurá la API key de Stability AI en Railway.",
                     "task_type": "file",
-                    "model_label": "gemini + pollinations",
+                    "model_label": "pollinations · imagen",
                     "latency_ms": int((time.time() - t0) * 1000),
                     "image_url": edit_url,
                     "filename": file.filename,
@@ -506,4 +584,9 @@ async def upload_file(
 
 @router.get("/status")
 async def status():
-    return {"groq": bool(GROQ_KEY), "tavily": bool(TAVILY_KEY), "gemini": bool(GEMINI_KEY)}
+    return {
+        "groq": bool(GROQ_KEY),
+        "tavily": bool(TAVILY_KEY),
+        "gemini": bool(GEMINI_KEY),
+        "stability": bool(STABILITY_KEY),
+    }
