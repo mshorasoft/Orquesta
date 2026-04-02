@@ -1,120 +1,136 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
-import httpx
-import os
-import time
-import base64
-import json
-import io
-import urllib.parse
+import httpx, os, time, base64, io
 
 router = APIRouter()
 
-GROQ_API_KEY    = os.getenv("GROQ_API_KEY", "")
-TAVILY_API_KEY  = os.getenv("TAVILY_API_KEY", "")
-GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
+GROQ_KEY   = os.getenv("GROQ_API_KEY", "")
+TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 
-GEMINI_MODEL       = "gemini-2.5-flash"
-GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+# ─────────────────────────────────────────────
+# SYSTEM PROMPTS  (inspired by ChatGPT/Claude/Gemini best practices)
+# Dynamic prompts per mode — not one-size-fits-all
+# ─────────────────────────────────────────────
+def build_system_prompt(mode: str, task: str) -> str:
+    base = """Eres Orquesta, un asistente de inteligencia artificial de nivel experto.
 
-SYSTEM_PROMPTS = {
-    "general": """Eres Orquesta, un asistente de IA de nivel experto. Tu objetivo es dar respuestas de la más alta calidad posible, como lo haría un especialista senior en el tema consultado.
+PRINCIPIOS FUNDAMENTALES:
+- Respondé SIEMPRE en el mismo idioma que usa el usuario.
+- Pensá antes de responder. Si el tema es complejo, razoná paso a paso internamente antes de dar tu respuesta final.
+- Sé directo, específico y útil. Nunca genérico ni vago.
+- Jamás termines con "¿En qué más puedo ayudarte?" o frases similares.
+- Si el usuario tiene un problema, diagnosticá la causa raíz, no el síntoma.
+- Usá datos, valores, fórmulas y especificaciones reales cuando corresponda.
+- Estructurá bien: usa listas, pasos o secciones cuando haga la respuesta más clara.
+- Memorizá el contexto de la conversación y usalo para dar respuestas más precisas.
+"""
+    modes = {
+        "tecnico": """
+ROL: Ingeniero senior / científico especialista en el área consultada.
+- Diagnosticá con precisión técnica real. Causas raíz, no síntomas superficiales.
+- Incluí valores numéricos, parámetros, fórmulas, rangos aceptables.
+- Citá normas o estándares relevantes cuando corresponda (ISO, ASTM, DIN, etc.).
+- Si hay múltiples causas posibles, ordenalas por probabilidad descendente.
+- Dá soluciones accionables con pasos concretos.
+""",
+        "creativo": """
+ROL: Director creativo senior con experiencia en escritura, marketing y diseño.
+- Sé original, inesperado y memorable. Evitá lo genérico.
+- Proponé múltiples variantes o ángulos cuando sea útil.
+- Adaptá el tono exactamente al contexto (formal, casual, poético, humorístico).
+- Mostrá, no solo describas — usá ejemplos concretos.
+""",
+        "codigo": """
+ROL: Desarrollador full-stack senior con 15+ años de experiencia.
+- Escribí código limpio, eficiente, bien estructurado y comentado donde sea necesario.
+- Seguí las best practices del lenguaje (PEP8, ESLint, etc.).
+- Incluí manejo de errores y casos edge cuando sea relevante.
+- Si hay un bug, explicá la causa raíz exacta antes de dar la solución.
+- Preferí soluciones simples sobre complejas (principio KISS).
+- Para snippets cortos: código directo. Para sistemas: explicá la arquitectura primero.
+""",
+        "realtime": """
+ROL: Analista de información con acceso a datos actualizados de internet.
+- Presentá la información más reciente disponible de forma clara y estructurada.
+- Separás hechos confirmados de información que puede cambiar.
+- Si hay incertidumbre en los datos, aclaralo brevemente.
+""",
+        "archivo": """
+ROL: Analista experto en procesamiento y comprensión de documentos.
+- Analizá el contenido del archivo con profundidad real.
+- Extraé los puntos clave, estructuras, datos importantes y conclusiones.
+- Si el archivo tiene tablas o datos numéricos, analizalos e interpretalos.
+- Respondé exactamente lo que el usuario pregunta sobre el archivo.
+- Si el archivo tiene errores o inconsistencias, señalalos.
+""",
+    }
+    tasks = {
+        "image": "\nTu tarea actual: generar una descripción optimizada para creación de imagen.",
+    }
+    prompt = base
+    if mode in modes:
+        prompt += modes[mode]
+    elif task in modes:
+        prompt += modes[task]
+    if task in tasks:
+        prompt += tasks[task]
+    return prompt
 
-REGLAS:
-1. Respondé SIEMPRE en el mismo idioma que usa el usuario.
-2. Sé directo y específico. Nunca des respuestas vagas o genéricas.
-3. Ante problemas técnicos: diagnosticá con precisión, explicá el mecanismo y dá soluciones concretas con valores y parámetros reales.
-4. Estructurá la respuesta con jerarquía clara cuando haya múltiples puntos.
-5. NUNCA termines con frases como ¿Necesitás más ayuda? o Espero haberte ayudado.
-6. Si el tema es técnico, respondé con profundidad real — no des respuestas de manual básico.
-7. Usá el contexto previo de la conversación para dar respuestas más precisas.
-8. Priorizá utilidad práctica sobre longitud.""",
 
-    "tecnico": """Eres Orquesta en modo TÉCNICO EXPERTO. Respondé como un ingeniero senior o científico especializado en el área consultada.
-- Usá terminología técnica precisa
-- Incluí valores, fórmulas, parámetros y especificaciones reales
-- Diagnosticá causas raíz, no síntomas superficiales
-- Dá soluciones paso a paso con datos concretos
-- Citá normas, estándares o referencias técnicas cuando sea relevante
-- NUNCA des respuestas genéricas o de manual básico
-- Respondé en el idioma del usuario.""",
-
-    "creativo": """Eres Orquesta en modo CREATIVO. Ayudás con escritura, ideas, diseño, marketing, contenido y arte.
-- Sé original, fresco e imaginativo
-- Proponé múltiples opciones o variaciones cuando corresponda
-- Pensá fuera de lo convencional
-- Adaptá el tono al contexto (formal, casual, humorístico, poético)
-- Respondé en el idioma del usuario.""",
-
-    "codigo": """Eres Orquesta en modo CÓDIGO. Sos un desarrollador senior full-stack.
-- Escribí código limpio, eficiente y bien comentado
-- Explicá brevemente qué hace cada bloque importante
-- Seguí best practices del lenguaje
-- Incluí manejo de errores cuando corresponda
-- Si hay un bug, explicá la causa raíz y cómo corregirlo
-- Respondé en el idioma del usuario.""",
-}
-
+# ─────────────────────────────────────────────
+# CLASSIFICATION  — smart router
+# ─────────────────────────────────────────────
+IMAGE_KW = [
+    "genera una imagen","generá una imagen","crea una imagen","creá una imagen",
+    "dibuja","dibujá","ilustra","ilustrá","imagen de","foto de","fotografía de",
+    "generate image","create image","draw","make an image","picture of","render",
+    "diseña un logo","diseñá un logo","hazme una imagen","create a photo",
+]
 REALTIME_KW = [
     "hoy","ahora","actual","actualmente","últimas","ultimo","última",
-    "esta semana","esta noche","ayer","mañana","reciente",
+    "esta semana","esta noche","ayer","mañana","reciente","trending",
     "today","now","latest","current","yesterday","tonight","this week",
-    "partido","resultado","formación","alineación","ganó","perdió",
-    "empató","score","gol","goles","fixture","tabla","clasificación",
-    "champions","copa","mundial","liga","torneo","eliminatorias",
-    "jugó","juega","jugarán","derrota","victoria",
+    "partido","resultado","formación","alineación","ganó","perdió","empató",
+    "score","gol","goles","fixture","tabla","clasificación","champions",
+    "copa","mundial","liga","torneo","eliminatorias","jugó","juega",
+    "derrota","victoria","precio","cotización","dólar","euro","peso",
+    "bitcoin","crypto","cuánto cuesta","cuánto vale","cotizan","bolsa",
+    "acciones","clima","temperatura","pronóstico","lluvia","weather",
+    "noticias","noticia","news","murió","nació","lanzó","salió",
+    "eligieron","anunció","declaró","quién ganó","quién es el presidente",
+    "quién es el ceo","quién lidera",
+    # Países/equipos comunes que sugieren evento en tiempo real
     "argentina","brasil","españa","francia","alemania","inglaterra",
     "uruguay","colombia","chile","peru","mexico","zambia","nigeria",
-    "real madrid","barcelona","boca","river","messi","ronaldo",
-    "precio","cotización","dólar","euro","peso","bitcoin","crypto",
-    "cuánto cuesta","cuánto vale","cotizan","bolsa","acciones",
-    "clima","temperatura","pronóstico","lluvia","weather","forecast",
-    "noticias","noticia","news","murió","nació","lanzó","salió",
-    "eligieron","ganaron","perdieron","anunció","declaró","trending",
+    "real madrid","barcelona","boca","river","messi","ronaldo","mbappé",
 ]
 CODE_KW = [
     "código","code","función","function","script","python","javascript",
     "typescript","bug","debug","clase","class","algoritmo","sql",
     "html","css","api","json","regex","bash","programa","programar",
+    "endpoint","database","query","loop","array","objeto","object",
 ]
 ANALYSIS_KW = [
     "analiza","compare","compara","evalúa","pros","contras",
     "explica en detalle","razona","diferencia entre","ventajas","desventajas",
-    "estrategia","qué opinas","qué pensás",
-]
-IMAGE_KW = [
-    "genera una imagen","generá una imagen","crea una imagen","creá una imagen",
-    "dibuja","dibujá","ilustra","ilustrá","imagen de","foto de",
-    "generate image","create image","draw","make an image","picture of",
-    "diseña","diseñá","render",
+    "estrategia","qué opinas","qué pensás","cuál es mejor","recomienda",
+    "debería","conviene","vale la pena",
 ]
 
-MODELS = {
-    "realtime": "llama-3.3-70b-versatile",
-    "code":     "llama-3.3-70b-versatile",
-    "analysis": "mixtral-8x7b-32768",
-    "text":     "llama-3.3-70b-versatile",
-    "image":    "pollinations",
-    "file":     "gemini",
-}
-LABELS = {
-    "realtime": "tavily · web + groq",
-    "code":     "groq · llama 3.3",
-    "analysis": "groq · mixtral",
-    "text":     "groq · llama 3.3",
-    "image":    "pollinations · imagen",
-    "file":     "gemini · visión",
-}
-
-
-def classify(prompt: str) -> str:
+def classify(prompt: str, mode: str) -> str:
+    if mode == "codigo":
+        return "code"
+    if mode == "creativo":
+        return "creative"
+    if mode == "tecnico":
+        return "technical"
     p = prompt.lower()
     if any(k in p for k in IMAGE_KW):
         return "image"
     if " vs " in p or " contra " in p:
         return "realtime"
-    if any(x in p for x in ["cómo salió","como salio","cómo le fue","qué pasó","que paso","cómo quedó","como quedo"]):
+    if any(x in p for x in ["cómo salió","como salio","cómo quedó","como quedo","qué pasó","que paso","cómo le fue"]):
         return "realtime"
     if any(k in p for k in REALTIME_KW):
         return "realtime"
@@ -122,234 +138,122 @@ def classify(prompt: str) -> str:
         return "code"
     if any(k in p for k in ANALYSIS_KW):
         return "analysis"
-    return "text"
+    return "general"
 
 
-async def call_groq_with_history(prompt: str, model: str, history: list, mode: str = "general") -> str:
-    system = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["general"])
-    messages = [{"role": "system", "content": system}]
-    for m in history[-10:]:
-        role = "assistant" if m.get("role") == "assistant" else "user"
-        messages.append({"role": role, "content": m.get("content", "")})
-    messages.append({"role": "user", "content": prompt})
+TASK_LABELS = {
+    "image":     "pollinations · imagen",
+    "realtime":  "tavily · web + groq",
+    "code":      "groq · llama 3.3",
+    "technical": "groq · mixtral",
+    "analysis":  "groq · mixtral",
+    "creative":  "groq · llama 3.3",
+    "general":   "groq · llama 3.3",
+}
+TASK_MODELS = {
+    "code":      "llama-3.3-70b-versatile",
+    "technical": "mixtral-8x7b-32768",
+    "analysis":  "mixtral-8x7b-32768",
+    "creative":  "llama-3.3-70b-versatile",
+    "general":   "llama-3.3-70b-versatile",
+    "realtime":  "llama-3.3-70b-versatile",
+}
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        res = await client.post(
+
+# ─────────────────────────────────────────────
+# API CALLERS  — with cascade fallback
+# ─────────────────────────────────────────────
+async def call_groq(messages: list, model: str = "llama-3.3-70b-versatile") -> str:
+    async with httpx.AsyncClient(timeout=35) as c:
+        r = await c.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={"model": model, "messages": messages, "max_tokens": 2048, "temperature": 0.7},
+            headers={"Authorization": f"Bearer {GROQ_KEY}"},
+            json={"model": model, "messages": messages, "max_tokens": 2048, "temperature": 0.65},
         )
-        data = res.json()
-        if not res.is_success:
-            raise HTTPException(502, detail=data.get("error", {}).get("message", "Error Groq"))
-        return data["choices"][0]["message"]["content"]
+        d = r.json()
+        if not r.is_success:
+            raise Exception(d.get("error", {}).get("message", "Groq error"))
+        return d["choices"][0]["message"]["content"]
+
+
+async def call_groq_fallback(messages: list) -> str:
+    """Try Mixtral first, then Llama as fallback"""
+    try:
+        return await call_groq(messages, "mixtral-8x7b-32768")
+    except Exception:
+        return await call_groq(messages, "llama-3.3-70b-versatile")
+
+
+async def call_gemini(prompt: str) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    async with httpx.AsyncClient(timeout=35) as c:
+        r = await c.post(url, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 2048}})
+        d = r.json()
+        if not r.is_success:
+            raise Exception(str(d))
+        return d["candidates"][0]["content"]["parts"][0]["text"]
+
+
+async def call_gemini_vision(prompt: str, b64: str, mime: str) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    payload = {"contents": [{"parts": [{"inline_data": {"mime_type": mime, "data": b64}}, {"text": prompt}]}], "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.3}}
+    async with httpx.AsyncClient(timeout=45) as c:
+        r = await c.post(url, json=payload)
+        d = r.json()
+        if not r.is_success:
+            raise Exception(str(d))
+        return d["candidates"][0]["content"]["parts"][0]["text"]
 
 
 async def call_tavily(query: str) -> str:
-    async with httpx.AsyncClient(timeout=20) as client:
-        res = await client.post(
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.post(
             "https://api.tavily.com/search",
-            json={"api_key": TAVILY_API_KEY, "query": query, "search_depth": "basic", "max_results": 5, "include_answer": True},
+            json={"api_key": TAVILY_KEY, "query": query, "search_depth": "basic", "max_results": 6, "include_answer": True},
         )
-        data = res.json()
-        if not res.is_success:
-            raise Exception(data.get("message", "Error Tavily"))
-        answer = data.get("answer", "")
-        results = data.get("results", [])
-        context = f"Respuesta directa: {answer}\n\n" if answer else ""
-        context += "\n\n".join(f"{r['title']}\n{r['content']}" for r in results[:4])
-        return context
+        d = r.json()
+        if not r.is_success:
+            raise Exception(d.get("message", "Tavily error"))
+        answer = d.get("answer", "")
+        results = d.get("results", [])
+        ctx = f"Respuesta directa: {answer}\n\n" if answer else ""
+        ctx += "\n\n".join(f"[{r['title']}]\n{r['content']}" for r in results[:5])
+        return ctx
 
 
-def generate_image_url_pollinations(prompt: str) -> str:
-    clean_prompt = prompt + ", no watermark, no logo, no text overlay, clean image"
-    encoded = urllib.parse.quote(clean_prompt)
-    return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true&nofeed=true&model=flux&seed={int(time.time())}"
-
-async def call_gemini_vision(prompt: str, image_data: str, mime_type: str) -> str:
-    """Analiza imagen o documento con Gemini"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    payload = {
-        "contents": [{
-            "parts": [
-                {"inline_data": {"mime_type": mime_type, "data": image_data}},
-                {"text": prompt or "Analizá este archivo en detalle y describí su contenido."}
-            ]
-        }],
-        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.4}
-    }
-    async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post(url, json=payload)
-        data = res.json()
-        if not res.is_success:
-            raise HTTPException(502, detail=str(data))
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+def image_url(prompt: str) -> str:
+    import urllib.parse
+    return f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
 
 
-async def call_gemini_text(prompt: str, context: str) -> str:
-    """Procesa documentos de texto con Gemini"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    full_prompt = f"{SYSTEM_PROMPTS['general']}\n\nContenido del archivo:\n{context}\n\nConsulta del usuario: {prompt}"
-    payload = {
-        "contents": [{"parts": [{"text": full_prompt}]}],
-        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.4}
-    }
-    async with httpx.AsyncClient(timeout=45) as client:
-        res = await client.post(url, json=payload)
-        data = res.json()
-        if not res.is_success:
-            raise HTTPException(502, detail=str(data))
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+# ─────────────────────────────────────────────
+# BUILD MESSAGES  — with conversation memory
+# ─────────────────────────────────────────────
+def build_messages(system: str, history: list, prompt: str) -> list:
+    msgs = [{"role": "system", "content": system}]
+    for m in history[-12:]:  # last 12 messages = 6 turns of context
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if role not in ("user", "assistant") or not content:
+            continue
+        msgs.append({"role": role, "content": content})
+    msgs.append({"role": "user", "content": prompt})
+    return msgs
 
 
-async def gemini_generate_image(prompt: str) -> tuple[str, str]:
-    """
-    Intenta generar imagen con Gemini.
-    Retorna (base64_o_url, label).
-    Si Gemini falla por quota/permisos, cae en Pollinations.
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            res = await client.post(url, json=payload)
-            data = res.json()
-            # Si falla por quota, permisos o modelo no disponible → fallback
-            if res.status_code in (429, 403, 404) or not res.is_success:
-                raise Exception(f"Gemini no disponible: {res.status_code}")
-            for part in data.get("candidates", [{}])[0].get("content", {}).get("parts", []):
-                if "inlineData" in part:
-                    return f"data:image/png;base64,{part['inlineData']['data']}", "gemini · generación de imagen"
-            raise Exception("Gemini no devolvió imagen")
-    except Exception:
-        # Fallback a Pollinations
-        url_img = generate_image_url_pollinations(prompt)
-        return url_img, "pollinations · imagen"
-
-
-async def gemini_edit_image(prompt: str, image_data: str, mime_type: str) -> tuple[str, str]:
-    """
-    Intenta editar imagen con Gemini.
-    Retorna (base64_o_url, label).
-    Si Gemini falla por quota/permisos, cae en Pollinations con el prompt.
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    payload = {
-        "contents": [{
-            "parts": [
-                {"inline_data": {"mime_type": mime_type, "data": image_data}},
-                {"text": prompt}
-            ]
-        }],
-        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            res = await client.post(url, json=payload)
-            data = res.json()
-            if res.status_code in (429, 403, 404) or not res.is_success:
-                raise Exception(f"Gemini no disponible: {res.status_code}")
-            for part in data.get("candidates", [{}])[0].get("content", {}).get("parts", []):
-                if "inlineData" in part:
-                    return f"data:image/png;base64,{part['inlineData']['data']}", "gemini · edición de imagen"
-            raise Exception("Gemini no devolvió imagen editada")
-    except Exception:
-        # Fallback a Pollinations con el prompt de edición
-        url_img = generate_image_url_pollinations(prompt)
-        return url_img, "pollinations · imagen (fallback)"
-
-
-async def gemini_fuse_images(prompt: str, images: list) -> tuple[str, str]:
-    """
-    Fusiona múltiples imágenes con Gemini.
-    Retorna (base64_o_url, label).
-    Si falla, cae en Pollinations con el prompt.
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    parts = []
-    for mime_type, image_data in images:
-        parts.append({"inline_data": {"mime_type": mime_type, "data": image_data}})
-    parts.append({"text": prompt})
-    payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}
-    }
-    try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            res = await client.post(url, json=payload)
-            data = res.json()
-            if res.status_code in (429, 403, 404) or not res.is_success:
-                raise Exception(f"Gemini no disponible: {res.status_code}")
-            for part in data.get("candidates", [{}])[0].get("content", {}).get("parts", []):
-                if "inlineData" in part:
-                    return f"data:image/png;base64,{part['inlineData']['data']}", "gemini · fusión de imágenes"
-            raise Exception("Gemini no devolvió imagen fusionada")
-    except Exception:
-        url_img = generate_image_url_pollinations(prompt)
-        return url_img, "pollinations · imagen (fallback)"
-
-
-def pillow_edit_image(content: bytes, prompt: str) -> bytes:
-    """Edición local con Pillow: redimensionar, recortar, rotar, filtros, etc."""
-    try:
-        from PIL import Image, ImageFilter, ImageEnhance
-        import re
-        img = Image.open(io.BytesIO(content))
-        p = prompt.lower()
-
-        resize_match = re.search(r'(\d+)\s*[xX×]\s*(\d+)', prompt)
-        if resize_match or any(k in p for k in ["redimensiona", "resize", "tamaño", "escala", "scale"]):
-            if resize_match:
-                w, h = int(resize_match.group(1)), int(resize_match.group(2))
-            else:
-                w, h = img.width // 2, img.height // 2
-            img = img.resize((w, h), Image.LANCZOS)
-        elif any(k in p for k in ["rota", "rotate", "gira"]):
-            angle_match = re.search(r'(\d+)\s*°?', prompt)
-            angle = int(angle_match.group(1)) if angle_match else 90
-            img = img.rotate(angle, expand=True)
-        elif any(k in p for k in ["recorta", "crop", "centra"]):
-            w, h = img.size
-            new_w, new_h = w // 2, h // 2
-            left = (w - new_w) // 2
-            top = (h - new_h) // 2
-            img = img.crop((left, top, left + new_w, top + new_h))
-        elif any(k in p for k in ["blanco y negro", "grayscale", "grises", "b&n", "b/n"]):
-            img = img.convert("L").convert("RGB")
-        elif any(k in p for k in ["desenfoca", "blur", "difumina"]):
-            img = img.filter(ImageFilter.GaussianBlur(radius=5))
-        elif any(k in p for k in ["nitidez", "sharpen", "enfoca"]):
-            img = img.filter(ImageFilter.SHARPEN)
-        elif any(k in p for k in ["brillo", "brightness", "ilumina"]):
-            img = ImageEnhance.Brightness(img).enhance(1.5)
-        elif any(k in p for k in ["contraste", "contrast"]):
-            img = ImageEnhance.Contrast(img).enhance(1.5)
-        elif any(k in p for k in ["voltea", "flip", "espejo", "mirror"]):
-            img = img.transpose(Image.FLIP_LEFT_RIGHT)
-
-        output = io.BytesIO()
-        img.save(output, format="PNG")
-        return output.getvalue()
-
-    except ImportError:
-        raise HTTPException(500, detail="Pillow no está instalado. Agregá 'Pillow' a requirements.txt")
-
-
-class HistoryMessage(BaseModel):
+# ─────────────────────────────────────────────
+# MODELS
+# ─────────────────────────────────────────────
+class Msg(BaseModel):
     role: str
     content: str
 
-
-class PromptRequest(BaseModel):
+class OrchestrateReq(BaseModel):
     prompt: str
     history: list = []
     mode: str = "general"
 
-
-class PromptResponse(BaseModel):
+class OrchestrateResp(BaseModel):
     result: str
     task_type: str
     model_label: str
@@ -357,138 +261,207 @@ class PromptResponse(BaseModel):
     image_url: str = ""
 
 
-@router.post("/orchestrate", response_model=PromptResponse)
-async def orchestrate(req: PromptRequest):
+# ─────────────────────────────────────────────
+# MAIN ENDPOINT
+# ─────────────────────────────────────────────
+@router.post("/orchestrate", response_model=OrchestrateResp)
+async def orchestrate(req: OrchestrateReq):
     if not req.prompt.strip():
-        raise HTTPException(400, "El prompt no puede estar vacío")
+        raise HTTPException(400, "Prompt vacío")
 
     t0 = time.time()
-    task = classify(req.prompt)
-
-    if req.mode == "codigo":
-        task = "code"
-
-    model = MODELS[task]
-    label = LABELS[task]
-    image_url = ""
-
-    if task == "image":
-        image_url, label = await gemini_generate_image(req.prompt)
-        result = f"Imagen generada para: *{req.prompt}*"
-
-    elif task == "realtime" and TAVILY_API_KEY:
-        try:
-            context = await call_tavily(req.prompt)
-            synth_prompt = (
-                f'El usuario pregunta: "{req.prompt}"\n\n'
-                f"Información actualizada de internet:\n{context}\n\n"
-                f"Respondé de forma natural y completa en el mismo idioma de la pregunta. "
-                f"Usá la información provista sin citar números de fuente."
-            )
-            result = await call_groq_with_history(synth_prompt, MODELS["text"], req.history[:-1] if req.history else [], req.mode)
-        except Exception:
-            result = await call_groq_with_history(req.prompt, MODELS["text"], req.history[:-1] if req.history else [], req.mode)
-    else:
-        result = await call_groq_with_history(req.prompt, model, req.history[:-1] if req.history else [], req.mode)
-
-    return PromptResponse(
-        result=result,
-        task_type=task,
-        model_label=label,
-        latency_ms=int((time.time() - t0) * 1000),
-        image_url=image_url,
-    )
-
-
-@router.post("/upload")
-async def upload_file(
-    prompt: str = Form(default="Analizá este archivo en detalle."),
-    file: UploadFile = File(...)
-):
-    t0 = time.time()
-    content = await file.read()
-    fname = file.filename.lower()
-    mime = file.content_type or ""
+    task = classify(req.prompt, req.mode)
+    label = TASK_LABELS.get(task, "groq · llama 3.3")
+    img_url = ""
+    result = ""
 
     try:
-        # Imágenes
-        if mime.startswith("image/") or any(fname.endswith(x) for x in [".jpg",".jpeg",".png",".gif",".webp"]):
-            b64 = base64.b64encode(content).decode()
-            p = prompt.lower()
+        # ── IMAGE GENERATION ──────────────────
+        if task == "image":
+            img_url = image_url(req.prompt)
+            result = f"Generando imagen para: *{req.prompt}*"
 
-            # Edición local con Pillow (rápida, sin costo)
-            if any(k in p for k in ["redimensiona","resize","tamaño","rota","rotate","recorta","crop",
-                                      "blanco y negro","grayscale","grises","desenfoca","blur",
-                                      "nitidez","sharpen","brillo","brightness","contraste","contrast",
-                                      "voltea","flip","espejo","mirror","gira"]):
-                edited = pillow_edit_image(content, prompt)
-                b64_result = base64.b64encode(edited).decode()
-                return {
-                    "result": "✅ Imagen editada correctamente.",
-                    "task_type": "image_edit",
-                    "model_label": "pillow · edición local",
-                    "latency_ms": int((time.time() - t0) * 1000),
-                    "image_url": f"data:image/png;base64,{b64_result}",
-                    "filename": file.filename,
-                }
-
-            # Edición creativa → Gemini con fallback a Pollinations
-            elif any(k in p for k in ["edita","modifica","cambia","agrega","quita","elimina","añade",
-                                        "edit","modify","change","add","remove","transform","convierte",
-                                        "pon","ponle","hazlo","hazla","similar","similares","campaña",
-                                        "genera","crea","dibuja","ilustra"]):
-                enhanced_prompt = prompt + ". IMPORTANTE: Generá una imagen completamente nueva y original basada en el estilo de la imagen adjunta. No uses imágenes de internet. No incluyas marcas de agua, logos ni texto. Crea contenido 100% original."
-                img_url, label = await gemini_edit_image(enhanced_prompt, b64, mime or "image/jpeg")
-                return {
-                    "result": "✅ Imagen procesada.",
-                    "task_type": "image_edit",
-                    "model_label": label,
-                    "latency_ms": int((time.time() - t0) * 1000),
-                    "image_url": img_url,
-                    "filename": file.filename,
-                }
-
-            # Análisis de imagen (sin edición)
+        # ── REAL-TIME SEARCH ──────────────────
+        elif task == "realtime":
+            if TAVILY_KEY:
+                try:
+                    ctx = await call_tavily(req.prompt)
+                    synth = (
+                        f"El usuario pregunta: \"{req.prompt}\"\n\n"
+                        f"Información actualizada obtenida de internet:\n{ctx}\n\n"
+                        f"Instrucción: Respondé de forma natural y completa en el mismo idioma de la pregunta. "
+                        f"Usá los datos reales provistos. No cites números de fuente como [1] o [2]. "
+                        f"Si la información es parcial o incierta, aclaralo brevemente."
+                    )
+                    sys_prompt = build_system_prompt("realtime", task)
+                    msgs = build_messages(sys_prompt, req.history[:-1], synth)
+                    result = await call_groq(msgs)
+                    label = "tavily · web + groq"
+                except Exception:
+                    # Fallback: Groq sin búsqueda
+                    sys_prompt = build_system_prompt(req.mode, task)
+                    msgs = build_messages(sys_prompt, req.history, req.prompt)
+                    result = await call_groq(msgs)
+                    label = "groq · llama 3.3"
             else:
-                result = await call_gemini_vision(prompt, b64, mime or "image/jpeg")
-                return {
-                    "result": result,
-                    "task_type": "file",
-                    "model_label": "gemini · visión",
-                    "latency_ms": int((time.time() - t0) * 1000),
-                    "image_url": "",
-                    "filename": file.filename,
-                }
+                sys_prompt = build_system_prompt(req.mode, task)
+                msgs = build_messages(sys_prompt, req.history, req.prompt)
+                result = await call_groq(msgs)
+                label = "groq · llama 3.3"
 
-        # PDF → Gemini Vision
-        elif fname.endswith(".pdf") or mime == "application/pdf":
-            b64 = base64.b64encode(content).decode()
-            result = await call_gemini_vision(prompt, b64, "application/pdf")
-            label = "gemini · pdf"
-
-        # Texto plano, código, CSV, JSON, XML
-        elif any(fname.endswith(x) for x in [".txt",".md",".csv",".json",".xml",".py",".js",".html",".css"]):
-            text = content.decode("utf-8", errors="ignore")[:12000]
-            result = await call_gemini_text(prompt, text)
-            label = "gemini · texto"
-
-        # Word / Excel
-        elif any(fname.endswith(x) for x in [".docx",".xlsx",".xls",".doc"]):
-            try:
-                text = content.decode("utf-8", errors="ignore")[:8000]
-                result = await call_gemini_text(prompt, f"[Archivo Office] {text}")
-            except Exception:
-                result = "Para analizar archivos Word o Excel con mayor precisión, te recomiendo convertirlos a PDF o copiar el texto directamente en el chat."
-            label = "gemini · documento"
-
+        # ── TEXT / CODE / ANALYSIS / TECHNICAL ─
         else:
-            result = f"Tipo de archivo no soportado: {fname}. Soportados: imágenes, PDF, TXT, CSV, JSON, código fuente."
-            label = "orquesta"
+            sys_prompt = build_system_prompt(req.mode, task)
+            msgs = build_messages(sys_prompt, req.history, req.prompt)
+            model = TASK_MODELS.get(task, "llama-3.3-70b-versatile")
+            try:
+                result = await call_groq(msgs, model)
+            except Exception:
+                # Cascade: try other Groq model
+                try:
+                    alt = "llama-3.3-70b-versatile" if model != "llama-3.3-70b-versatile" else "mixtral-8x7b-32768"
+                    result = await call_groq(msgs, alt)
+                    label = f"groq · fallback"
+                except Exception:
+                    # Last resort: Gemini
+                    if GEMINI_KEY:
+                        full = f"{sys_prompt}\n\n{req.prompt}"
+                        result = await call_gemini(full)
+                        label = "gemini · flash"
+                    else:
+                        raise HTTPException(502, "Todos los modelos fallaron")
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(502, detail=f"Error procesando archivo: {str(e)}")
+        raise HTTPException(502, detail=str(e))
+
+    return OrchestrateResp(
+        result=result,
+        task_type=task,
+        model_label=label,
+        latency_ms=int((time.time() - t0) * 1000),
+        image_url=img_url,
+    )
+
+
+# ─────────────────────────────────────────────
+# FILE UPLOAD  — smart extraction + cascade
+# ─────────────────────────────────────────────
+@router.post("/upload")
+async def upload_file(
+    prompt: str = Form(default="Analizá este archivo en detalle y explicá su contenido de forma clara y profesional."),
+    file: UploadFile = File(...),
+):
+    t0 = time.time()
+    raw = await file.read()
+    fname = (file.filename or "").lower()
+    mime = file.content_type or ""
+
+    async def groq_analyze(text: str, extra_sys: str = "") -> tuple[str, str]:
+        sys_p = build_system_prompt("archivo", "archivo") + extra_sys
+        msgs = build_messages(sys_p, [], f"Archivo: {file.filename}\n\nContenido:\n{text[:14000]}\n\nConsulta: {prompt}")
+        try:
+            r = await call_groq(msgs, "llama-3.3-70b-versatile")
+            return r, "groq · llama 3.3"
+        except Exception:
+            r = await call_groq(msgs, "mixtral-8x7b-32768")
+            return r, "groq · mixtral"
+
+    async def gemini_analyze(text: str) -> tuple[str, str]:
+        sys_p = build_system_prompt("archivo", "archivo")
+        full = f"{sys_p}\n\nArchivo: {file.filename}\n\nContenido:\n{text[:14000]}\n\nConsulta: {prompt}"
+        r = await call_gemini(full)
+        return r, "gemini · flash"
+
+    async def with_fallback(text: str, extra_sys: str = "") -> tuple[str, str]:
+        """Try Groq first, fallback to Gemini"""
+        try:
+            return await groq_analyze(text, extra_sys)
+        except Exception:
+            if GEMINI_KEY:
+                return await gemini_analyze(text)
+            raise
+
+    result = ""
+    label = "orquesta"
+
+    try:
+        # ── IMAGES → Gemini Vision (única que puede ver) ──
+        if mime.startswith("image/") or any(fname.endswith(x) for x in [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"]):
+            b64 = base64.b64encode(raw).decode()
+            result = await call_gemini_vision(prompt, b64, mime or "image/jpeg")
+            label = "gemini · visión"
+
+        # ── PDF → Gemini Vision (lee PDFs nativamente) ──
+        elif fname.endswith(".pdf") or mime == "application/pdf":
+            b64 = base64.b64encode(raw).decode()
+            result = await call_gemini_vision(prompt, b64, "application/pdf")
+            label = "gemini · pdf"
+
+        # ── DOCX → extraer texto → Groq (fallback Gemini) ──
+        elif fname.endswith(".docx"):
+            try:
+                from docx import Document
+                doc = Document(io.BytesIO(raw))
+                paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+                tables = []
+                for tbl in doc.tables:
+                    for row in tbl.rows:
+                        row_txt = " | ".join(c.text.strip() for c in row.cells if c.text.strip())
+                        if row_txt:
+                            tables.append(row_txt)
+                text = "\n".join(paras)
+                if tables:
+                    text += "\n\nTablas:\n" + "\n".join(tables)
+                result, label = await with_fallback(text)
+            except ImportError:
+                result = "Módulo python-docx no instalado. Agregá 'python-docx==1.1.2' a requirements.txt."
+                label = "error"
+            except Exception as e:
+                result = f"No se pudo leer el Word: {e}. Probá guardarlo de nuevo como .docx."
+                label = "error"
+
+        # ── XLSX → extraer datos → Groq (fallback Gemini) ──
+        elif any(fname.endswith(x) for x in [".xlsx", ".xls"]):
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+                sheets = []
+                for sname in wb.sheetnames[:6]:
+                    ws = wb[sname]
+                    rows = []
+                    for row in ws.iter_rows(max_row=300, values_only=True):
+                        cells = [str(c) for c in row if c is not None]
+                        if cells:
+                            rows.append(" | ".join(cells))
+                    if rows:
+                        sheets.append(f"=== Hoja: {sname} ===\n" + "\n".join(rows[:150]))
+                text = "\n\n".join(sheets)
+                result, label = await with_fallback(text, "\n- Prestá especial atención a los datos numéricos, tendencias y anomalías.\n- Si hay múltiples hojas, analizalas en conjunto cuando sea relevante.")
+            except ImportError:
+                result = "Módulo openpyxl no instalado. Agregá 'openpyxl==3.1.5' a requirements.txt."
+                label = "error"
+            except Exception as e:
+                result = f"No se pudo leer el Excel: {e}."
+                label = "error"
+
+        # ── TXT / CSV / JSON / código → Groq (fallback Gemini) ──
+        elif any(fname.endswith(x) for x in [".txt", ".md", ".csv", ".json", ".xml", ".py", ".js", ".ts", ".html", ".css", ".sql", ".yaml", ".yml", ".log"]):
+            text = raw.decode("utf-8", errors="ignore")
+            result, label = await with_fallback(text)
+
+        # ── DOC legacy ──
+        elif fname.endswith(".doc"):
+            result = "Los archivos .doc (Word 97-2003) no son compatibles. Abrí el archivo en Word moderno, guardalo como .docx y volvé a subirlo."
+            label = "orquesta"
+
+        else:
+            result = f"Tipo de archivo no soportado: {fname}.\n\nFormatos compatibles: imágenes (JPG/PNG/WebP/GIF), PDF, Word (.docx), Excel (.xlsx), texto (.txt/.csv/.json/.md), código fuente (.py/.js/.ts/.html/.css/.sql)."
+            label = "orquesta"
+
+    except Exception as e:
+        raise HTTPException(502, detail=f"Error procesando archivo: {e}")
 
     return {
         "result": result,
@@ -500,48 +473,6 @@ async def upload_file(
     }
 
 
-@router.post("/generate-image")
-async def generate_image_endpoint(prompt: str = Form(...)):
-    """Genera una imagen desde texto — Gemini primero, Pollinations como fallback."""
-    t0 = time.time()
-    img_url, label = await gemini_generate_image(prompt)
-    return {
-        "result": f"✅ Imagen generada para: *{prompt}*",
-        "task_type": "image_generate",
-        "model_label": label,
-        "latency_ms": int((time.time() - t0) * 1000),
-        "image_url": img_url,
-    }
-
-
-@router.post("/fuse-images")
-async def fuse_images(
-    prompt: str = Form(default="Fusioná estas imágenes de forma creativa"),
-    files: list[UploadFile] = File(...)
-):
-    """Fusiona múltiples imágenes — Gemini primero, Pollinations como fallback."""
-    t0 = time.time()
-    if len(files) < 2:
-        raise HTTPException(400, "Se necesitan al menos 2 imágenes para fusionar")
-    images = []
-    for f in files[:4]:
-        c = await f.read()
-        b64 = base64.b64encode(c).decode()
-        images.append((f.content_type or "image/jpeg", b64))
-    img_url, label = await gemini_fuse_images(prompt, images)
-    return {
-        "result": "✅ Imágenes fusionadas.",
-        "task_type": "image_fuse",
-        "model_label": label,
-        "latency_ms": int((time.time() - t0) * 1000),
-        "image_url": img_url,
-    }
-
-
 @router.get("/status")
 async def status():
-    return {
-        "groq": bool(GROQ_API_KEY),
-        "tavily": bool(TAVILY_API_KEY),
-        "gemini": bool(GEMINI_API_KEY),
-    }
+    return {"groq": bool(GROQ_KEY), "tavily": bool(TAVILY_KEY), "gemini": bool(GEMINI_KEY)}
