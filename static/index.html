@@ -108,8 +108,6 @@ header { display: flex; align-items: center; justify-content: space-between; pad
 /* Generated image */
 .gen-image { max-width: 100%; border-radius: 10px; margin-top: 8px; border: 1px solid var(--border2); display: block; }
 .img-loading { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); margin-top: 6px; }
-.img-download { display: inline-block; margin-top: 8px; font-size: 11px; color: var(--em-mid); text-decoration: none; padding: 4px 10px; border: 1px solid rgba(93,202,165,0.3); border-radius: 20px; transition: background .15s; }
-.img-download:hover { background: rgba(93,202,165,0.08); }
 
 /* File attachment preview */
 .file-preview { display: flex; align-items: center; gap: 8px; background: var(--surface3); border-radius: 8px; padding: 7px 10px; margin-bottom: 6px; font-size: 12px; color: var(--text2); max-width: 260px; }
@@ -190,7 +188,7 @@ strong { color: var(--em-mid); font-weight: 500; }
 
   <div id="banner">
     <div class="bnr-icon">
-      <svg width="14" height="14" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="3.5" fill="white"/><circle cx="16" cy="7" r="2.2" fill="white" opacity=".9"/><circle cx="23.6" cy="11" r="2.2" fill="white" opacity=".9"/><circle cx="23.6" cy="21" r="2.2" fill="white" opacity=".9"/><circle cx="16" cy="25" r="2.2" fill="white" opacity=".9"/><circle cx="8.4" cy="21" r="2.2" fill="white" opacity=".9"/><circle cx="8.4" cy="11" r="2.2" fill="white" opacity=".9"/></svg>
+      <svg width="14" height="14" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="3.5" fill="white"/><circle cx="16" cy="7" r="2.2" fill="white" opacity=".9"/><circle cx="23.6" cy="11" r="2.2" fill="white" opacity=".9"/><circle cx="23.6" cy="21" r="2.2" fill="white" opacity=".9"/><circle cx="16" cy="25" r="2.2" fill="white" opacity=".9"/><circle cx="8.4" cy="21" r="2.2" fill="white" opacity=".9"/><circle cx="8.4" cy="11" r="2.2" fill="white" opacity=".9"/><line x1="16" y1="16" x2="16" y2="9.2" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="22.3" y2="12.6" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="22.3" y2="19.4" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="16" y2="22.8" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="9.7" y2="19.4" stroke="white" stroke-width="1" opacity=".5"/><line x1="16" y1="16" x2="9.7" y2="12.6" stroke="white" stroke-width="1" opacity=".5"/></svg>
     </div>
     <div class="bnr-body">
       <div class="bnr-title">Orquesta — La fusión de las mejores IAs</div>
@@ -214,7 +212,7 @@ strong { color: var(--em-mid); font-weight: 500; }
   <div id="messages">
     <div class="welcome" id="welcome">
       <div class="welcome-icon">
-        <svg width="26" height="26" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="3.5" fill="#1D9E75"/><circle cx="16" cy="7" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="23.6" cy="11" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="23.6" cy="21" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="16" cy="25" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="8.4" cy="21" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="8.4" cy="11" r="2.2" fill="#1D9E75" opacity=".8"/></svg>
+        <svg width="26" height="26" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="3.5" fill="#1D9E75"/><circle cx="16" cy="7" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="23.6" cy="11" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="23.6" cy="21" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="16" cy="25" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="8.4" cy="21" r="2.2" fill="#1D9E75" opacity=".8"/><circle cx="8.4" cy="11" r="2.2" fill="#1D9E75" opacity=".8"/><line x1="16" y1="16" x2="16" y2="9.2" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="22.3" y2="12.6" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="22.3" y2="19.4" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="16" y2="22.8" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="9.7" y2="19.4" stroke="#1D9E75" stroke-width="1" opacity=".4"/><line x1="16" y1="16" x2="9.7" y2="12.6" stroke="#1D9E75" stroke-width="1" opacity=".4"/></svg>
       </div>
       <h1>Hola, soy <em>Orquesta</em></h1>
       <p>Texto, imágenes, archivos, búsquedas en tiempo real — todo en un solo lugar.</p>
@@ -303,67 +301,16 @@ function removeFile() {
 
 function setModelBadge(label) {
   const isRT = label && label.includes('tavily');
-  const isImg = label && (label.includes('pollinations') || label.includes('imagen') || label.includes('image'));
+  const isImg = label && label.includes('pollinations');
   const isGem = label && label.includes('gemini');
   let color = 'var(--em-mid)';
   let dot = 'var(--em)';
   if (isRT) { color = 'var(--amber)'; dot = 'var(--amber)'; }
   if (isImg) { color = 'var(--purple)'; dot = 'var(--purple)'; }
-  if (isGem && !isImg) { color = '#85B7EB'; dot = '#85B7EB'; }
+  if (isGem) { color = '#85B7EB'; dot = '#85B7EB'; }
   document.getElementById('model-label').textContent = label || 'listo';
   document.getElementById('model-label').style.color = color;
   document.getElementById('model-dot').style.background = dot;
-}
-
-function renderImage(imageUrl, bubble, wrap) {
-  const imgWrap = document.createElement('div');
-
-  if (imageUrl.startsWith('data:')) {
-    // Imagen base64 — mostrar directamente
-    const img = document.createElement('img');
-    img.className = 'gen-image';
-    img.src = imageUrl;
-    imgWrap.appendChild(img);
-
-    // Botón de descarga
-    const dlBtn = document.createElement('a');
-    dlBtn.href = imageUrl;
-    dlBtn.download = 'orquesta-imagen.png';
-    dlBtn.className = 'img-download';
-    dlBtn.textContent = '⬇ Descargar imagen';
-    imgWrap.appendChild(document.createElement('br'));
-    imgWrap.appendChild(dlBtn);
-
-    bubble.appendChild(imgWrap);
-    setTimeout(() => { wrap.scrollTop = wrap.scrollHeight; }, 50);
-
-  } else {
-    // Imagen URL externa (Pollinations)
-    imgWrap.innerHTML = '<div class="img-loading"><div class="typing-indicator"><span></span><span></span><span></span></div> Generando imagen...</div>';
-    bubble.appendChild(imgWrap);
-
-    const img = new Image();
-    img.className = 'gen-image';
-    img.onload = () => {
-      imgWrap.innerHTML = '';
-      imgWrap.appendChild(img);
-
-      const dlBtn = document.createElement('a');
-      dlBtn.href = imageUrl;
-      dlBtn.download = 'orquesta-imagen.png';
-      dlBtn.className = 'img-download';
-      dlBtn.target = '_blank';
-      dlBtn.textContent = '⬇ Descargar imagen';
-      imgWrap.appendChild(document.createElement('br'));
-      imgWrap.appendChild(dlBtn);
-
-      wrap.scrollTop = wrap.scrollHeight;
-    };
-    img.onerror = () => {
-      imgWrap.innerHTML = '<span style="color:var(--text3);font-size:12px">No se pudo generar la imagen. Intentá con otra descripción.</span>';
-    };
-    img.src = imageUrl;
-  }
 }
 
 function addMessage(role, content, meta, imageUrl, filename) {
@@ -393,9 +340,38 @@ function addMessage(role, content, meta, imageUrl, filename) {
     textDiv.innerHTML = formatText(content);
     bubble.appendChild(textDiv);
 
-    // Imagen generada o editada
+    // Generated or edited image
     if (imageUrl) {
-      renderImage(imageUrl, bubble, wrap);
+      const imgWrap = document.createElement('div');
+      const isDataUrl = imageUrl.startsWith('data:');
+      if (!isDataUrl) {
+        imgWrap.innerHTML = `<div class="img-loading"><div class="typing-indicator"><span></span><span></span><span></span></div> Generando imagen...</div>`;
+      }
+      bubble.appendChild(imgWrap);
+      const img = new Image();
+      img.className = 'gen-image';
+      img.style.maxWidth = '100%';
+      img.style.borderRadius = '10px';
+      img.style.marginTop = '8px';
+      img.style.display = 'block';
+      img.onload = () => {
+        imgWrap.innerHTML = '';
+        imgWrap.appendChild(img);
+        // Add download button for edited images
+        if (isDataUrl) {
+          const dlBtn = document.createElement('a');
+          dlBtn.href = imageUrl;
+          dlBtn.download = 'orquesta-edit.jpg';
+          dlBtn.style.cssText = 'display:inline-flex;align-items:center;gap:5px;margin-top:6px;font-size:11px;color:var(--em-mid);text-decoration:none;';
+          dlBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Descargar imagen editada';
+          imgWrap.appendChild(dlBtn);
+        }
+        wrap.scrollTop = wrap.scrollHeight;
+      };
+      img.onerror = () => {
+        imgWrap.innerHTML = '<span style="color:var(--text3);font-size:12px">No se pudo procesar la imagen.</span>';
+      };
+      img.src = imageUrl;
     }
 
     // Actions row
@@ -403,7 +379,7 @@ function addMessage(role, content, meta, imageUrl, filename) {
       const actions = document.createElement('div');
       actions.className = 'bubble-actions';
       const isRT = meta && meta.label && meta.label.includes('tavily');
-      const isImg = meta && meta.label && (meta.label.includes('pollinations') || meta.label.includes('imagen') || meta.label.includes('image'));
+      const isImg = meta && meta.label && meta.label.includes('pollinations');
       const dotColor = isRT ? 'var(--amber)' : isImg ? 'var(--purple)' : 'var(--em)';
       if (meta) {
         const pill = document.createElement('div');
@@ -514,6 +490,7 @@ async function sendMessage() {
     let data;
 
     if (fileToSend) {
+      // Upload file
       const formData = new FormData();
       formData.append('file', fileToSend);
       formData.append('prompt', prompt || 'Analizá este archivo en detalle.');
@@ -521,6 +498,7 @@ async function sendMessage() {
       data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Error procesando archivo');
     } else {
+      // Regular prompt
       const res = await fetch('/api/orchestrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
