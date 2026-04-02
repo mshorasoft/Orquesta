@@ -185,7 +185,7 @@ async def call_groq_fallback(messages: list) -> str:
 
 
 async def call_gemini(prompt: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
     async with httpx.AsyncClient(timeout=35) as c:
         r = await c.post(url, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 2048}})
         d = r.json()
@@ -195,7 +195,7 @@ async def call_gemini(prompt: str) -> str:
 
 
 async def call_gemini_vision(prompt: str, b64: str, mime: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
     payload = {"contents": [{"parts": [{"inline_data": {"mime_type": mime, "data": b64}}, {"text": prompt}]}], "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.3}}
     async with httpx.AsyncClient(timeout=45) as c:
         r = await c.post(url, json=payload)
