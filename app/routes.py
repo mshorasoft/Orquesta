@@ -1,57 +1,58 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import httpx, os, time, base64, io, json
+import httpx, os, time, base64, io, json, re
 
 router = APIRouter()
 
 GROQ_KEY      = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY    = os.getenv("TAVILY_API_KEY", "")
 GEMINI_KEY    = os.getenv("GEMINI_API_KEY", "")
-STABILITY_KEY = os.getenv("STABILITY_API_KEY", "")
 OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
 
-# ── SYSTEM PROMPTS ─────────────────────────────────────────────────────────────
+# ── SYSTEM PROMPTS ────────────────────────────────────────────────────────────
 BASE_SYSTEM = """Sos Orquesta, una inteligencia artificial de nivel experto creada para dar las mejores respuestas posibles.
 
 PERSONALIDAD:
 - Cálida, directa y profesional — como hablar con un especialista de confianza
-- Si sabés el nombre del usuario, usalo naturalmente en la conversación
-- Nunca sos robótico ni genérico
+- Si sabés el nombre del usuario, usalo naturalmente en la conversación (no en cada mensaje, solo cuando sea natural)
+- Nunca sos robótico ni genérico. Tenés criterio propio.
 
 REGLAS DE RESPUESTA:
-1. Respondé SIEMPRE en el mismo idioma del usuario
+1. Respondé SIEMPRE en el mismo idioma del usuario — si habla en español, respondé en español
 2. Sé específico y profundo — nunca vago ni superficial
-3. Ante problemas técnicos: diagnosticá la causa raíz, dá soluciones concretas con valores reales
-4. Estructurá bien: usá listas y pasos cuando clarifican
+3. Ante problemas técnicos: diagnosticá la causa raíz con precisión, dá soluciones concretas con valores y parámetros reales
+4. Estructurá bien: usá listas y pasos cuando mejoran la claridad
 5. NUNCA termines con "¿En qué más puedo ayudarte?" ni frases similares
-6. Si el tema es técnico, respondé con profundidad de experto senior
-7. Usá el historial de conversación para dar respuestas más precisas y personalizadas"""
+6. Si el tema es técnico, respondé con profundidad real de especialista senior
+7. Usá el historial de conversación para dar respuestas más precisas y contextualizadas
+8. Si el usuario da información incompleta, hacé suposiciones razonables y aclaralas brevemente
+9. Para temas de actualidad que no conozcas: indicá claramente tu fecha de corte de conocimiento"""
 
 MODE_PROMPTS = {
-    "tecnico": "\nMODO TÉCNICO: Actuás como ingeniero o científico senior. Incluí valores numéricos, fórmulas, parámetros reales, normas técnicas relevantes. Ordená causas por probabilidad. Sin respuestas de manual básico.",
-    "creativo": "\nMODO CREATIVO: Actuás como director creativo senior. Sé original e inesperado. Proponé múltiples variantes. Adaptá el tono exactamente al contexto pedido.",
-    "codigo": "\nMODO CÓDIGO: Actuás como desarrollador full-stack senior. Código limpio, eficiente, con manejo de errores. Explicá bugs por su causa raíz. Seguí best practices del lenguaje.",
+    "tecnico": "\n\nMODO TÉCNICO ACTIVO: Actuás como ingeniero o científico senior especializado en el área consultada. Incluí valores numéricos, fórmulas, parámetros reales, normas técnicas (ISO, ASTM, DIN, etc.). Ordená causas por probabilidad. Sin respuestas genéricas de manual básico. Diagnóstico de causa raíz siempre.",
+    "creativo": "\n\nMODO CREATIVO ACTIVO: Actuás como director creativo senior. Sé original, inesperado, memorable. Proponé múltiples variantes cuando sea útil. Adaptá el tono exactamente al contexto pedido. Mostrá con ejemplos concretos.",
+    "codigo": "\n\nMODO CÓDIGO ACTIVO: Actuás como desarrollador full-stack senior con 15+ años de experiencia. Código limpio, eficiente, con manejo de errores. Explicá bugs por su causa raíz exacta. Seguí best practices del lenguaje. Preferí soluciones simples sobre complejas.",
 }
 
 def get_system(mode: str, username: str = "") -> str:
     sys = BASE_SYSTEM
     if username:
-        sys += f"\n\nNOMBRE DEL USUARIO: {username}. Usalo naturalmente cuando sea apropiado."
+        sys += f"\n\nNOMBRE DEL USUARIO: {username}. Usalo de forma natural cuando sea apropiado — no en cada mensaje."
     sys += MODE_PROMPTS.get(mode, "")
     return sys
 
-# ── CLASSIFICATION ──────────────────────────────────────────────────────────────
+# ── CLASSIFICATION ────────────────────────────────────────────────────────────
 IMAGE_GEN_KW = [
-    "genera una imagen","generá","crea una imagen","creá una imagen",
-    "dibuja","dibujá","ilustra","imagen de","foto de","fotografía de",
+    "genera una imagen","generá una imagen","crea una imagen","creá una imagen",
+    "dibuja","dibujá","ilustra","ilustrá","imagen de","foto de","fotografía de",
     "generate image","create image","draw","make an image","picture of","render",
-    "diseña un logo","hazme una imagen","create a photo",
+    "diseña un logo","diseñá","hazme una imagen","create a photo","make a photo",
 ]
 IMAGE_EDIT_KW = [
     "modifica","modificá","cambia","cambiá","reemplaza","reemplazá",
-    "edita","editá","borra","añade","quita","quitá","pon","pone",
-    "edit","change","replace","remove","swap","put","add","convert",
+    "edita","editá","borra","añade","quita","quitá","pon","pone","transforma",
+    "edit","change","replace","remove","swap","put","add","convert","transform",
 ]
 REALTIME_KW = [
     "hoy","ahora","actual","actualmente","últimas","ultimo","última",
@@ -59,12 +60,12 @@ REALTIME_KW = [
     "today","now","latest","current","yesterday","tonight","this week",
     "partido","resultado","formación","alineación","ganó","perdió","empató",
     "score","gol","goles","fixture","tabla","clasificación","champions",
-    "copa","mundial","liga","torneo","eliminatorias","jugó","juega",
-    "derrota","victoria","precio","cotización","dólar","euro","peso",
-    "bitcoin","crypto","cuánto cuesta","cuánto vale","cotizan","bolsa",
-    "acciones","clima","temperatura","pronóstico","lluvia","weather",
+    "copa","mundial","liga","torneo","jugó","juega","derrota","victoria",
+    "precio","cotización","dólar","euro","peso","bitcoin","crypto",
+    "cuánto cuesta","cuánto vale","cotizan","bolsa","acciones",
+    "clima","temperatura","pronóstico","lluvia","weather","forecast",
     "noticias","noticia","news","murió","nació","lanzó","salió",
-    "eligieron","anunció","declaró","trending",
+    "eligieron","anunció","declaró","trending","quién ganó","quién es el",
     "argentina","brasil","españa","francia","alemania","inglaterra",
     "uruguay","colombia","chile","peru","mexico","zambia","nigeria",
     "real madrid","barcelona","boca","river","messi","ronaldo","mbappé",
@@ -73,35 +74,33 @@ CODE_KW = [
     "código","code","función","function","script","python","javascript",
     "typescript","bug","debug","clase","class","algoritmo","sql",
     "html","css","api","json","regex","bash","programa","programar",
+    "endpoint","database","query","loop","array","objeto","object","error en",
 ]
 ANALYSIS_KW = [
     "analiza","compare","compara","evalúa","pros","contras",
     "diferencia entre","ventajas","desventajas","estrategia",
     "qué opinas","qué pensás","cuál es mejor","recomienda","conviene",
+    "debería","vale la pena","qué tan bueno","cómo se compara",
+]
+TRANSLATE_KW = [
+    "traduce","traducí","translate","traducción al","how do you say",
+    "cómo se dice","¿cómo se dice",
 ]
 
 def classify(prompt: str, mode: str) -> str:
-    if mode == "codigo": return "code"
+    if mode == "codigo":   return "code"
     if mode == "creativo": return "creative"
-    if mode == "tecnico": return "technical"
+    if mode == "tecnico":  return "technical"
     p = prompt.lower()
-    if any(k in p for k in IMAGE_GEN_KW): return "image_gen"
-    if " vs " in p or " contra " in p: return "realtime"
-    if any(x in p for x in ["cómo salió","como salio","cómo quedó","qué pasó","que paso"]): return "realtime"
-    if any(k in p for k in REALTIME_KW): return "realtime"
-    if any(k in p for k in CODE_KW): return "code"
-    if any(k in p for k in ANALYSIS_KW): return "analysis"
+    if any(k in p for k in IMAGE_GEN_KW):  return "image_gen"
+    if any(k in p for k in TRANSLATE_KW):  return "translate"
+    if " vs " in p or " contra " in p:     return "realtime"
+    if any(x in p for x in ["cómo salió","como salio","cómo quedó","qué pasó","que paso","cómo le fue"]): return "realtime"
+    if any(k in p for k in REALTIME_KW):   return "realtime"
+    if any(k in p for k in CODE_KW):       return "code"
+    if any(k in p for k in ANALYSIS_KW):   return "analysis"
     return "general"
 
-TASK_MODELS = {
-    "image_gen": "dall-e-3",
-    "realtime":  "llama-3.3-70b-versatile",
-    "code":      "llama-3.3-70b-versatile",
-    "technical": "mixtral-8x7b-32768",
-    "analysis":  "mixtral-8x7b-32768",
-    "creative":  "llama-3.3-70b-versatile",
-    "general":   "llama-3.3-70b-versatile",
-}
 TASK_LABELS = {
     "image_gen": "openai · dall-e-3",
     "realtime":  "tavily · web + groq",
@@ -109,12 +108,22 @@ TASK_LABELS = {
     "technical": "groq · mixtral",
     "analysis":  "groq · mixtral",
     "creative":  "groq · llama 3.3",
+    "translate": "groq · llama 3.3",
     "general":   "groq · llama 3.3",
 }
+TASK_MODELS = {
+    "code":      "llama-3.3-70b-versatile",
+    "technical": "mixtral-8x7b-32768",
+    "analysis":  "mixtral-8x7b-32768",
+    "creative":  "llama-3.3-70b-versatile",
+    "translate": "llama-3.3-70b-versatile",
+    "general":   "llama-3.3-70b-versatile",
+    "realtime":  "llama-3.3-70b-versatile",
+}
 
-# ── API CALLERS ─────────────────────────────────────────────────────────────────
+# ── API CALLERS ───────────────────────────────────────────────────────────────
 async def call_groq(messages: list, model: str = "llama-3.3-70b-versatile") -> str:
-    async with httpx.AsyncClient(timeout=35) as c:
+    async with httpx.AsyncClient(timeout=40) as c:
         r = await c.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_KEY}"},
@@ -135,7 +144,10 @@ async def call_gemini(prompt: str) -> str:
 
 async def call_gemini_vision(prompt: str, b64: str, mime: str) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
-    payload = {"contents": [{"parts": [{"inline_data": {"mime_type": mime, "data": b64}}, {"text": prompt}]}], "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.3}}
+    payload = {
+        "contents": [{"parts": [{"inline_data": {"mime_type": mime, "data": b64}}, {"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.3}
+    }
     async with httpx.AsyncClient(timeout=45) as c:
         r = await c.post(url, json=payload)
         d = r.json()
@@ -157,7 +169,6 @@ async def call_tavily(query: str) -> str:
         return ctx
 
 async def call_openai_image_gen(prompt: str) -> str:
-    """Generate image with DALL-E 3. Returns image URL."""
     async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post(
             "https://api.openai.com/v1/images/generations",
@@ -170,44 +181,38 @@ async def call_openai_image_gen(prompt: str) -> str:
         return d["data"][0]["url"]
 
 async def call_openai_image_edit(image_bytes: bytes, prompt: str) -> str:
-    """Edit image with GPT-4o vision + DALL-E 3. Returns base64 image."""
-    # Step 1: Use GPT-4o to understand the image and create optimal edit prompt
+    """GPT-4o analyzes image + DALL-E 3 generates edited version."""
     b64 = base64.b64encode(image_bytes).decode()
     analysis_messages = [
-        {"role": "system", "content": "You are an expert image editor. Analyze the image and create a detailed DALL-E 3 prompt that describes the image with the requested modification applied. Be very specific about style, lighting, composition, colors."},
+        {"role": "system", "content": "You are an expert image editor. Analyze the image carefully and create a detailed DALL-E 3 prompt that recreates the image WITH the requested modification. Be very specific about: photographic style, lighting, composition, colors, background, subject pose. The goal is maximum similarity to the original with only the requested change."},
         {"role": "user", "content": [
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            {"type": "text", "text": f"Create a DALL-E 3 prompt for this image WITH this modification: {prompt}. Describe EVERYTHING in the image (background, lighting, style, composition) but with the change applied. Reply with ONLY the prompt, nothing else."}
+            {"type": "text", "text": f"Create a DALL-E 3 prompt for this image WITH this modification: {prompt}. Reply with ONLY the prompt text, nothing else."}
         ]}
     ]
     async with httpx.AsyncClient(timeout=40) as c:
         r = await c.post(
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENAI_KEY}"},
-            json={"model": "gpt-4o", "messages": analysis_messages, "max_tokens": 500},
+            json={"model": "gpt-4o", "messages": analysis_messages, "max_tokens": 600},
         )
         d = r.json()
         if not r.is_success:
             raise Exception(d.get("error", {}).get("message", "GPT-4o error"))
         optimized_prompt = d["choices"][0]["message"]["content"]
-
-    # Step 2: Generate new image with DALL-E 3 using the optimized prompt
-    img_url = await call_openai_image_gen(optimized_prompt)
-    return img_url
+    return await call_openai_image_gen(optimized_prompt)
 
 async def call_openai_tts(text: str, voice: str = "nova") -> bytes:
-    """Text to speech with OpenAI TTS."""
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(
             "https://api.openai.com/v1/audio/speech",
             headers={"Authorization": f"Bearer {OPENAI_KEY}"},
             json={"model": "tts-1", "input": text[:4096], "voice": voice},
         )
-        if not r.is_success: raise Exception(f"TTS error {r.status_code}")
+        if not r.is_success: raise Exception(f"TTS error {r.status_code}: {r.text[:200]}")
         return r.content
 
 async def call_openai_stt(audio_bytes: bytes, filename: str) -> str:
-    """Speech to text with OpenAI Whisper."""
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(
             "https://api.openai.com/v1/audio/transcriptions",
@@ -229,35 +234,30 @@ def build_messages(system: str, history: list, prompt: str) -> list:
     msgs.append({"role": "user", "content": prompt})
     return msgs
 
-def resize_image_for_stability(image_bytes: bytes) -> bytes:
-    """Resize image to fit within Stability AI aspect ratio limits."""
+async def groq_with_fallback(messages: list, model: str) -> tuple[str, str]:
+    """Try primary model, fallback to alternate Groq model, then Gemini."""
     try:
-        from PIL import Image as PILImage
-        img = PILImage.open(io.BytesIO(image_bytes))
-        w, h = img.size
-        ratio = w / h
-        if ratio > 2.5:
-            new_w = int(h * 2.5)
-            left = (w - new_w) // 2
-            img = img.crop((left, 0, left + new_w, h))
-        elif ratio < 0.4:
-            new_h = int(w * 2.5)
-            top = (h - new_h) // 2
-            img = img.crop((0, top, w, top + new_h))
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=92)
-        return buf.getvalue()
+        return await call_groq(messages, model), model
     except Exception:
-        return image_bytes
+        try:
+            alt = "llama-3.3-70b-versatile" if model != "llama-3.3-70b-versatile" else "mixtral-8x7b-32768"
+            return await call_groq(messages, alt), alt
+        except Exception:
+            if GEMINI_KEY:
+                # Extract prompt from messages for Gemini
+                sys_content = next((m["content"] for m in messages if m["role"] == "system"), "")
+                user_content = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+                result = await call_gemini(f"{sys_content}\n\n{user_content}")
+                return result, "gemini"
+            raise
 
-# ── MODELS ──────────────────────────────────────────────────────────────────────
+# ── MODELS ───────────────────────────────────────────────────────────────────
 class OrchestrateReq(BaseModel):
     prompt: str
     history: list = []
     mode: str = "general"
     username: str = ""
+    language: str = ""  # auto-detect if empty
 
 class OrchestrateResp(BaseModel):
     result: str
@@ -265,8 +265,9 @@ class OrchestrateResp(BaseModel):
     model_label: str
     latency_ms: int
     image_url: str = ""
+    detected_language: str = ""
 
-# ── MAIN ENDPOINT ────────────────────────────────────────────────────────────────
+# ── MAIN ENDPOINT ─────────────────────────────────────────────────────────────
 @router.post("/orchestrate", response_model=OrchestrateResp)
 async def orchestrate(req: OrchestrateReq):
     if not req.prompt.strip():
@@ -280,19 +281,24 @@ async def orchestrate(req: OrchestrateReq):
     system = get_system(req.mode, req.username)
 
     try:
-        # IMAGE GENERATION
+        # ── IMAGE GENERATION ─────────────────────────────────────────────────
         if task == "image_gen":
             if OPENAI_KEY:
-                img_url = await call_openai_image_gen(req.prompt)
-                result = f"Imagen generada con DALL-E 3."
-                label = "openai · dall-e-3"
+                try:
+                    img_url = await call_openai_image_gen(req.prompt)
+                    result = "Imagen generada con DALL-E 3."
+                    label = "openai · dall-e-3"
+                except Exception as e:
+                    if "quota" in str(e).lower() or "billing" in str(e).lower():
+                        raise HTTPException(402, "Sin créditos en OpenAI. Recargá tu cuenta en platform.openai.com/billing")
+                    raise
             else:
                 import urllib.parse
                 img_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(req.prompt)}?width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
                 result = "Imagen generada con Pollinations AI."
                 label = "pollinations · imagen"
 
-        # REAL-TIME SEARCH
+        # ── REAL-TIME SEARCH ─────────────────────────────────────────────────
         elif task == "realtime":
             if TAVILY_KEY:
                 try:
@@ -300,39 +306,35 @@ async def orchestrate(req: OrchestrateReq):
                     synth = (
                         f'El usuario pregunta: "{req.prompt}"\n\n'
                         f"Información actualizada de internet:\n{ctx}\n\n"
-                        f"Respondé de forma natural y completa en el mismo idioma. "
-                        f"Usá los datos reales. No cites números de fuente."
+                        f"Respondé de forma natural y completa en el mismo idioma de la pregunta. "
+                        f"Usá los datos reales provistos. No cites números de fuente como [1] o [2]."
                     )
                     msgs = build_messages(system, req.history[:-1], synth)
-                    result = await call_groq(msgs)
+                    result, used_model = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
                     label = "tavily · web + groq"
                 except Exception:
                     msgs = build_messages(system, req.history, req.prompt)
-                    result = await call_groq(msgs)
+                    result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
                     label = "groq · llama 3.3"
             else:
                 msgs = build_messages(system, req.history, req.prompt)
-                result = await call_groq(msgs)
+                result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
                 label = "groq · llama 3.3"
 
-        # TEXT / CODE / ANALYSIS / TECHNICAL
+        # ── TRANSLATION ──────────────────────────────────────────────────────
+        elif task == "translate":
+            translate_system = system + "\n\nEres un traductor experto. Traducí con precisión y naturalidad, respetando el registro (formal/informal) del texto original."
+            msgs = build_messages(translate_system, req.history, req.prompt)
+            result, used = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+            label = f"groq · traductor"
+
+        # ── TEXT / CODE / ANALYSIS / TECHNICAL ──────────────────────────────
         else:
             model = TASK_MODELS.get(task, "llama-3.3-70b-versatile")
             msgs = build_messages(system, req.history, req.prompt)
-            try:
-                result = await call_groq(msgs, model)
-            except Exception:
-                try:
-                    alt = "llama-3.3-70b-versatile" if model != "llama-3.3-70b-versatile" else "mixtral-8x7b-32768"
-                    result = await call_groq(msgs, alt)
-                    label = f"groq · fallback"
-                except Exception:
-                    if GEMINI_KEY:
-                        full = f"{system}\n\n{req.prompt}"
-                        result = await call_gemini(full)
-                        label = "gemini · flash"
-                    else:
-                        raise HTTPException(502, "Todos los modelos fallaron")
+            result, used = await groq_with_fallback(msgs, model)
+            if used == "gemini":
+                label = "gemini · flash"
 
     except HTTPException:
         raise
@@ -344,7 +346,7 @@ async def orchestrate(req: OrchestrateReq):
         latency_ms=int((time.time() - t0) * 1000), image_url=img_url,
     )
 
-# ── FILE UPLOAD ──────────────────────────────────────────────────────────────────
+# ── FILE UPLOAD ───────────────────────────────────────────────────────────────
 @router.post("/upload")
 async def upload_file(
     prompt: str = Form(default="Analizá este archivo en detalle y explicá su contenido de forma clara y profesional."),
@@ -359,24 +361,11 @@ async def upload_file(
     system = get_system(mode, username)
 
     async def groq_analyze(text: str) -> tuple[str, str]:
-        msgs = build_messages(system, [], f"Archivo: {file.filename}\n\nContenido:\n{text[:14000]}\n\nConsulta: {prompt}")
-        try:
-            r = await call_groq(msgs, "llama-3.3-70b-versatile")
-            return r, "groq · llama 3.3"
-        except Exception:
-            r = await call_groq(msgs, "mixtral-8x7b-32768")
-            return r, "groq · mixtral"
-
-    async def gemini_analyze(text: str) -> tuple[str, str]:
-        full = f"{system}\n\nArchivo: {file.filename}\n\nContenido:\n{text[:14000]}\n\nConsulta: {prompt}"
-        r = await call_gemini(full)
-        return r, "gemini · flash"
-
-    async def with_fallback(text: str) -> tuple[str, str]:
-        try: return await groq_analyze(text)
-        except Exception:
-            if GEMINI_KEY: return await gemini_analyze(text)
-            raise
+        full_prompt = f"Archivo: {file.filename}\n\nContenido:\n{text[:14000]}\n\nConsulta del usuario: {prompt}"
+        msgs = build_messages(system, [], full_prompt)
+        result, used = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+        label = "gemini · flash" if used == "gemini" else "groq · llama 3.3"
+        return result, label
 
     result = ""
     label = "orquesta"
@@ -391,26 +380,40 @@ async def upload_file(
             if OPENAI_KEY:
                 try:
                     img_url = await call_openai_image_edit(raw, prompt)
-                    result = "Imagen editada con GPT-4o + DALL-E 3. Analizé tu imagen original y apliqué el cambio que pediste."
+                    result = "Imagen editada con GPT-4o + DALL-E 3."
                     label = "gpt-4o + dall-e-3"
                 except Exception as e:
-                    result = f"Error al editar la imagen: {str(e)}"
+                    err = str(e)
+                    if "quota" in err.lower() or "billing" in err.lower():
+                        result = "Tu cuenta de OpenAI no tiene crédito. Cargá saldo en platform.openai.com/billing para editar imágenes."
+                    else:
+                        result = f"Error al editar: {err}"
                     label = "error"
             else:
-                result = "Para edición de imágenes configurá la variable OPENAI_API_KEY en Railway."
+                result = "Para editar imágenes necesitás configurar OPENAI_API_KEY en Railway."
                 label = "orquesta"
 
         # IMAGE ANALYSIS — Gemini Vision
         elif is_image:
-            b64 = base64.b64encode(raw).decode()
-            result = await call_gemini_vision(prompt, b64, mime or "image/jpeg")
-            label = "gemini · visión"
+            if GEMINI_KEY:
+                b64 = base64.b64encode(raw).decode()
+                sys_prompt = f"{system}\n\nAnalizá la imagen respondiendo: {prompt}"
+                result = await call_gemini_vision(sys_prompt, b64, mime or "image/jpeg")
+                label = "gemini · visión"
+            else:
+                result = "Para analizar imágenes necesitás configurar GEMINI_API_KEY en Railway."
+                label = "orquesta"
 
         # PDF — Gemini Vision
         elif fname.endswith(".pdf") or mime == "application/pdf":
-            b64 = base64.b64encode(raw).decode()
-            result = await call_gemini_vision(prompt, b64, "application/pdf")
-            label = "gemini · pdf"
+            if GEMINI_KEY:
+                b64 = base64.b64encode(raw).decode()
+                sys_prompt = f"{system}\n\nAnalizá este PDF respondiendo: {prompt}"
+                result = await call_gemini_vision(sys_prompt, b64, "application/pdf")
+                label = "gemini · pdf"
+            else:
+                result = "Para leer PDFs necesitás configurar GEMINI_API_KEY en Railway."
+                label = "orquesta"
 
         # DOCX
         elif fname.endswith(".docx"):
@@ -425,13 +428,13 @@ async def upload_file(
                         if rt: tables.append(rt)
                 text = "\n".join(paras)
                 if tables: text += "\n\nTablas:\n" + "\n".join(tables)
-                result, label = await with_fallback(text)
+                result, label = await groq_analyze(text)
             except Exception as e:
-                result = f"No se pudo leer el Word: {e}"
+                result = f"No se pudo leer el archivo Word: {e}. Asegurate de que sea un .docx válido."
                 label = "error"
 
         # XLSX
-        elif any(fname.endswith(x) for x in [".xlsx",".xls"]):
+        elif any(fname.endswith(x) for x in [".xlsx", ".xls"]):
             try:
                 import openpyxl
                 wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
@@ -444,26 +447,26 @@ async def upload_file(
                         if cells: rows.append(" | ".join(cells))
                     if rows: sheets.append(f"=== Hoja: {sname} ===\n" + "\n".join(rows[:150]))
                 text = "\n\n".join(sheets)
-                result, label = await with_fallback(text)
+                result, label = await groq_analyze(text)
             except Exception as e:
-                result = f"No se pudo leer el Excel: {e}"
+                result = f"No se pudo leer el Excel: {e}."
                 label = "error"
 
-        # TEXT / CODE / CSV / JSON
-        elif any(fname.endswith(x) for x in [".txt",".md",".csv",".json",".xml",".py",".js",".ts",".html",".css",".sql",".yaml",".yml",".log"]):
+        # TEXT / CODE / CSV / JSON / etc
+        elif any(fname.endswith(x) for x in [".txt",".md",".csv",".json",".xml",".py",".js",".ts",".html",".css",".sql",".yaml",".yml",".log",".sh"]):
             text = raw.decode("utf-8", errors="ignore")
-            result, label = await with_fallback(text)
+            result, label = await groq_analyze(text)
 
         elif fname.endswith(".doc"):
-            result = "Archivos .doc (Word 97-2003) no compatibles. Guardalo como .docx y volvé a subirlo."
+            result = "Los archivos .doc (Word 97-2003) no son compatibles. Abrí el archivo en Word, guardalo como .docx y volvé a subirlo."
             label = "orquesta"
 
         else:
-            result = f"Formato no soportado: {fname}. Soportados: imágenes, PDF, Word (.docx), Excel (.xlsx), texto/código."
+            result = f"Formato no soportado: {fname}\n\nFormatos compatibles: imágenes (JPG/PNG/WebP/GIF), PDF, Word (.docx), Excel (.xlsx/.xls), texto (.txt/.csv/.json/.md), código fuente."
             label = "orquesta"
 
     except Exception as e:
-        raise HTTPException(502, detail=f"Error: {e}")
+        raise HTTPException(502, detail=f"Error procesando archivo: {e}")
 
     return {
         "result": result, "task_type": "file", "model_label": label,
@@ -471,11 +474,11 @@ async def upload_file(
         "image_url": img_url, "filename": file.filename,
     }
 
-# ── AUDIO ENDPOINTS ──────────────────────────────────────────────────────────────
+# ── AUDIO ─────────────────────────────────────────────────────────────────────
 @router.post("/tts")
 async def text_to_speech(data: dict):
     if not OPENAI_KEY:
-        raise HTTPException(400, "OpenAI API key no configurada")
+        raise HTTPException(400, "OPENAI_API_KEY no configurada")
     text = data.get("text", "")
     voice = data.get("voice", "nova")
     if not text: raise HTTPException(400, "Texto vacío")
@@ -488,7 +491,7 @@ async def text_to_speech(data: dict):
 @router.post("/stt")
 async def speech_to_text(file: UploadFile = File(...)):
     if not OPENAI_KEY:
-        raise HTTPException(400, "OpenAI API key no configurada")
+        raise HTTPException(400, "OPENAI_API_KEY no configurada")
     try:
         audio_bytes = await file.read()
         text = await call_openai_stt(audio_bytes, file.filename or "audio.webm")
@@ -496,10 +499,12 @@ async def speech_to_text(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(502, str(e))
 
+# ── STATUS ────────────────────────────────────────────────────────────────────
 @router.get("/status")
 async def status():
     return {
-        "groq": bool(GROQ_KEY), "tavily": bool(TAVILY_KEY),
-        "gemini": bool(GEMINI_KEY), "stability": bool(STABILITY_KEY),
+        "groq": bool(GROQ_KEY),
+        "tavily": bool(TAVILY_KEY),
+        "gemini": bool(GEMINI_KEY),
         "openai": bool(OPENAI_KEY),
     }
