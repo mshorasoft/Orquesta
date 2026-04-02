@@ -468,13 +468,11 @@ async def upload_file(
                 b64 = base64.b64encode(raw).decode()
 
                 if STABILITY_KEY:
-                    # Use Stability AI search-and-replace — real image editing
                     try:
                         result_b64 = await call_stability_inpaint(b64, user_prompt=prompt)
-                        # Convert to data URL for frontend display
                         data_url = f"data:image/jpeg;base64,{result_b64}"
                         return {
-                            "result": "Imagen editada con Stability AI. Solo se modificó la parte que pediste — el resto quedó igual.",
+                            "result": "Imagen editada con Stability AI.",
                             "task_type": "file",
                             "model_label": "stability ai · sd3.5",
                             "latency_ms": int((time.time() - t0) * 1000),
@@ -482,10 +480,17 @@ async def upload_file(
                             "filename": file.filename,
                         }
                     except Exception as stability_err:
-                        # Surface the real error so we can debug
                         stability_error_msg = str(stability_err)
-                        # Try fallback to Pollinations
-                        pass
+                        print(f"STABILITY ERROR: {stability_error_msg}", flush=True)
+                        # Return the actual error to user so we can debug
+                        return {
+                            "result": f"Error de Stability AI: {stability_error_msg}",
+                            "task_type": "file",
+                            "model_label": "stability ai · error",
+                            "latency_ms": int((time.time() - t0) * 1000),
+                            "image_url": "",
+                            "filename": file.filename,
+                        }
 
                 # Fallback: describe + generate new image with Pollinations
                 try:
