@@ -206,41 +206,51 @@ async def call_gemini_vision(prompt: str, b64: str, mime: str) -> str:
         return d["candidates"][0]["content"]["parts"][0]["text"]
 
 
-async def call_stability_inpaint(image_b64: str, prompt: str, negative_prompt: str = "") -> str:
-    """
-    Stability AI SD3.5 image editing via inpainting.
-    Automatically generates a face/subject mask using the prompt context.
-    Returns base64 encoded result image.
-    """
-    import base64
-
-    # Decode original image
+async def call_stability_inpaint(image_b64: str, user_prompt: str, negative_prompt: str = "") -> str:
+    """Stability AI search-and-replace editing."""
     image_bytes = base64.b64decode(image_b64)
 
-    # Use Stability AI's search-and-replace endpoint (no manual mask needed)
-    # This is the most user-friendly: describe what to replace + what to put instead
+    # Use Groq to parse what to search and what to replace
+    sys_instruction = "Parse this image edit request. Reply ONLY with JSON: {search: what_to_find, replace: what_to_put}. Use 3-5 words per field."
+    try:
+        split_msgs = [
+            {"role": "system", "content": sys_instruction},
+            {"role": "user", "content": user_prompt}
+        ]
+        raw = await call_groq(split_msgs, "llama-3.3-70b-versatile")
+        import json as _json
+        clean = raw.strip().replace("```json", "").replace("```", "").strip()
+        parsed = _json.loads(clean)
+        search_prompt = str(parsed.get("search", "face"))
+        replace_prompt = str(parsed.get("replace", user_prompt))
+    except Exception:
+        search_prompt = "face"
+        replace_prompt = user_prompt
+
     async with httpx.AsyncClient(timeout=60) as c:
         response = await c.post(
             "https://api.stability.ai/v2beta/stable-image/edit/search-and-replace",
-            headers={
-                "authorization": f"Bearer {STABILITY_KEY}",
-                "accept": "image/*",
-            },
+            headers={"authorization": f"Bearer {STABILITY_KEY}", "accept": "image/*"},
             files={"image": ("image.jpg", image_bytes, "image/jpeg")},
             data={
-                "prompt": prompt,
-                "search_prompt": "",  # auto-detect what to replace based on prompt
-                "negative_prompt": negative_prompt or "blurry, low quality, watermark",
+                "prompt": replace_prompt,
+                "search_prompt": search_prompt,
+                "negative_prompt": negative_prompt or "blurry, low quality, distorted, watermark",
                 "output_format": "jpeg",
             },
         )
-
         if response.status_code == 200:
-            result_b64 = base64.b64encode(response.content).decode()
-            return result_b64
+            return base64.b64encode(response.content).decode()
+        elif response.status_code == 402:
+            raise Exception("Sin creditos en Stability AI. Recarga en platform.stability.ai")
+        elif response.status_code == 401:
+            raise Exception("API key de Stability AI invalida.")
         else:
-            error = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-            raise Exception(f"Stability AI error {response.status_code}: {error.get('message', response.text[:200])}")
+            try:
+                msg = response.json().get("message", response.text[:200])
+            except Exception:
+                msg = response.text[:200]
+            raise Exception(f"Stability AI {response.status_code}: {msg}")
 
 
 async def call_stability_generate(prompt: str) -> str:
@@ -460,7 +470,7 @@ async def upload_file(
                 if STABILITY_KEY:
                     # Use Stability AI search-and-replace — real image editing
                     try:
-                        result_b64 = await call_stability_inpaint(b64, prompt)
+                        result_b64 = await call_stability_inpaint(b64, user_prompt=prompt)
                         # Convert to data URL for frontend display
                         data_url = f"data:image/jpeg;base64,{result_b64}"
                         return {
@@ -471,8 +481,10 @@ async def upload_file(
                             "image_url": data_url,
                             "filename": file.filename,
                         }
-                    except Exception as e:
-                        # Fallback to Pollinations if Stability fails
+                    except Exception as stability_err:
+                        # Surface the real error so we can debug
+                        stability_error_msg = str(stability_err)
+                        # Try fallback to Pollinations
                         pass
 
                 # Fallback: describe + generate new image with Pollinations
@@ -490,7 +502,7 @@ async def upload_file(
                 )
                 edit_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(new_img_prompt)}?width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
                 return {
-                    "result": "Generé una versión nueva de la imagen aplicando el cambio pedido. Para edición directa de la imagen original, configurá la API key de Stability AI en Railway.",
+                    "result": "Generé una versión nueva de la imagen aplicando el cambio pedido.",
                     "task_type": "file",
                     "model_label": "pollinations · imagen",
                     "latency_ms": int((time.time() - t0) * 1000),
