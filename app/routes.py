@@ -185,7 +185,7 @@ async def call_groq_fallback(messages: list) -> str:
 
 
 async def call_gemini(prompt: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
     async with httpx.AsyncClient(timeout=35) as c:
         r = await c.post(url, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 2048}})
         d = r.json()
@@ -195,7 +195,7 @@ async def call_gemini(prompt: str) -> str:
 
 
 async def call_gemini_vision(prompt: str, b64: str, mime: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
     payload = {"contents": [{"parts": [{"inline_data": {"mime_type": mime, "data": b64}}, {"text": prompt}]}], "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.3}}
     async with httpx.AsyncClient(timeout=45) as c:
         r = await c.post(url, json=payload)
@@ -387,11 +387,38 @@ async def upload_file(
     label = "orquesta"
 
     try:
-        # ── IMAGES → Gemini Vision (única que puede ver) ──
+        # ── IMAGES → detect edit vs analysis ──
         if mime.startswith("image/") or any(fname.endswith(x) for x in [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"]):
-            b64 = base64.b64encode(raw).decode()
-            result = await call_gemini_vision(prompt, b64, mime or "image/jpeg")
-            label = "gemini · visión"
+            edit_kw = ["modifica","modificá","cambia","cambiá","reemplaza","reemplazá",
+                       "edita","editá","borra","añade","quita","quitá","pon","pone",
+                       "edit","change","replace","remove","swap","put","add"]
+            is_edit = any(k in prompt.lower() for k in edit_kw)
+            if is_edit:
+                # Describe original image then generate new one with the change
+                b64 = base64.b64encode(raw).decode()
+                try:
+                    desc = await call_gemini_vision(
+                        "Describí esta imagen en detalle: sujeto principal, colores, estilo fotográfico, composición, iluminación, fondo. Sé muy específico.",
+                        b64, mime or "image/jpeg"
+                    )
+                    import urllib.parse
+                    new_img_prompt = f"Fotografía profesional donde: {prompt}. Estilo y características de la imagen original: {desc}. Mantené el mismo estilo fotográfico, iluminación y composición."
+                    edit_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(new_img_prompt)}?width=1024&height=1024&nologo=true&enhance=true"
+                    return {
+                        "result": "No puedo editar imágenes directamente, pero analicé tu imagen y generé una nueva versión aplicando el cambio que pediste. Si no es lo que buscás, describí el cambio con más detalle.",
+                        "task_type": "file",
+                        "model_label": "gemini + pollinations",
+                        "latency_ms": int((time.time() - t0) * 1000),
+                        "image_url": edit_url,
+                        "filename": file.filename,
+                    }
+                except Exception:
+                    result = "No pude procesar la imagen para edición. Intentá describir la imagen que querés generar directamente en el chat."
+                    label = "orquesta"
+            else:
+                b64 = base64.b64encode(raw).decode()
+                result = await call_gemini_vision(prompt, b64, mime or "image/jpeg")
+                label = "gemini · visión" 
 
         # ── PDF → Gemini Vision (lee PDFs nativamente) ──
         elif fname.endswith(".pdf") or mime == "application/pdf":
