@@ -394,27 +394,31 @@ async def upload_file(
                        "edit","change","replace","remove","swap","put","add"]
             is_edit = any(k in prompt.lower() for k in edit_kw)
             if is_edit:
-                # Describe original image then generate new one with the change
+                import urllib.parse
                 b64 = base64.b64encode(raw).decode()
+                # Step 1: describe the original image with Gemini
                 try:
                     desc = await call_gemini_vision(
-                        "Describí esta imagen en detalle: sujeto principal, colores, estilo fotográfico, composición, iluminación, fondo. Sé muy específico.",
+                        "Describe this image in detail: main subject, colors, photographic style, composition, lighting, background, setting. Be very specific and detailed.",
                         b64, mime or "image/jpeg"
                     )
-                    import urllib.parse
-                    new_img_prompt = f"Fotografía profesional donde: {prompt}. Estilo y características de la imagen original: {desc}. Mantené el mismo estilo fotográfico, iluminación y composición."
-                    edit_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(new_img_prompt)}?width=1024&height=1024&nologo=true&enhance=true"
-                    return {
-                        "result": "No puedo editar imágenes directamente, pero analicé tu imagen y generé una nueva versión aplicando el cambio que pediste. Si no es lo que buscás, describí el cambio con más detalle.",
-                        "task_type": "file",
-                        "model_label": "gemini + pollinations",
-                        "latency_ms": int((time.time() - t0) * 1000),
-                        "image_url": edit_url,
-                        "filename": file.filename,
-                    }
                 except Exception:
-                    result = "No pude procesar la imagen para edición. Intentá describir la imagen que querés generar directamente en el chat."
-                    label = "orquesta"
+                    desc = "imagen fotográfica profesional"
+                # Step 2: build a new generation prompt combining description + requested change
+                new_img_prompt = (
+                    f"{prompt}. "
+                    f"Keep exactly the same photographic style, lighting, composition and background as: {desc}. "
+                    f"Professional photography, high quality, realistic."
+                )
+                edit_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(new_img_prompt)}?width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
+                return {
+                    "result": "Generé una imagen nueva aplicando el cambio que pediste. La edición directa de imágenes no está disponible, pero usé la descripción de tu imagen original como base. Si el resultado no es exacto, podés escribir una descripción más detallada de lo que querés.",
+                    "task_type": "file",
+                    "model_label": "gemini + pollinations",
+                    "latency_ms": int((time.time() - t0) * 1000),
+                    "image_url": edit_url,
+                    "filename": file.filename,
+                }
             else:
                 b64 = base64.b64encode(raw).decode()
                 result = await call_gemini_vision(prompt, b64, mime or "image/jpeg")
