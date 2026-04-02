@@ -210,6 +210,32 @@ async def call_stability_inpaint(image_b64: str, user_prompt: str, negative_prom
     """Stability AI search-and-replace editing."""
     image_bytes = base64.b64decode(image_b64)
 
+    # Resize image to comply with Stability AI aspect ratio limits (max 2.5:1)
+    try:
+        from PIL import Image as PILImage
+        import io as _io
+        img = PILImage.open(_io.BytesIO(image_bytes))
+        w, h = img.size
+        ratio = w / h
+        if ratio > 2.5:
+            # Too wide - crop width to fit 2.5:1
+            new_w = int(h * 2.5)
+            left = (w - new_w) // 2
+            img = img.crop((left, 0, left + new_w, h))
+        elif ratio < 0.4:
+            # Too tall - crop height to fit 1:2.5
+            new_h = int(w * 2.5)
+            top = (h - new_h) // 2
+            img = img.crop((0, top, w, top + new_h))
+        # Convert to RGB if needed (handles PNG with alpha)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=92)
+        image_bytes = buf.getvalue()
+    except Exception as resize_err:
+        print(f"Resize warning: {resize_err}", flush=True)
+
     # Use Groq to parse what to search and what to replace
     sys_instruction = "Parse this image edit request. Reply ONLY with JSON: {search: what_to_find, replace: what_to_put}. Use 3-5 words per field."
     try:
