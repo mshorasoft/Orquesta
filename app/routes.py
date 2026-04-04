@@ -197,6 +197,55 @@ async def groq_with_fallback(messages, model):
 
 from app.file_generator import generate_excel, generate_docx, generate_pdf, FILE_SYSTEM_PROMPTS
 
+
+# ── SMART IMAGE GENERATION (multi-provider fallback) ─────────────────────────
+async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
+    """Try OpenAI → Pollinations with enhanced prompt. Always delivers an image."""
+    import urllib.parse
+
+    # 1) OpenAI DALL-E 3 (best quality)
+    if OPENAI_KEY:
+        try:
+            url = await call_openai_image_gen(prompt)
+            return url, "✨ Imagen generada con DALL-E 3.", "openai · dall-e-3"
+        except Exception as e:
+            err = str(e).lower()
+            if "quota" in err or "billing" in err or "insufficient" in err:
+                pass  # No credits → fall through to free alternatives
+            elif "content_policy" in err or "safety" in err:
+                pass  # Policy → fall through
+            # Other errors: fall through
+
+    # 2) Pollinations AI (free, reliable, no key needed)
+    try:
+        enhanced = await _enhance_image_prompt(prompt)
+        seed = int(time.time()) % 99999
+        encoded = urllib.parse.quote(enhanced)
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true&seed={seed}&model=flux"
+        return url, "🎨 Imagen generada con Pollinations AI (Flux).", "pollinations · flux"
+    except Exception:
+        pass
+
+    # 3) Last resort — Pollinations with original prompt, no extras
+    seed = int(time.time()) % 99999
+    encoded = urllib.parse.quote(prompt[:500])
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={seed}"
+    return url, "🎨 Imagen generada.", "pollinations · imagen"
+
+
+async def _enhance_image_prompt(prompt: str) -> str:
+    """Use AI to enhance the image prompt for better results with free models."""
+    try:
+        msgs = [
+            {"role": "system", "content": "You are an expert at writing image generation prompts. Given a user's image request, rewrite it as a detailed, vivid, high-quality image generation prompt in English. Add style descriptors like: photorealistic, 8K, professional photography, cinematic lighting, detailed, etc. Keep it under 200 words. Reply with ONLY the enhanced prompt, nothing else."},
+            {"role": "user", "content": f"User wants: {prompt}"}
+        ]
+        enhanced, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+        return enhanced.strip()[:400]
+    except Exception:
+        return prompt
+
+
 _file_cache = {}
 
 def cache_file(file_bytes, filename, mime):
@@ -279,16 +328,7 @@ async def orchestrate(req: OrchestrateReq):
                 label = "error"
 
         elif task == "image_gen":
-            if OPENAI_KEY:
-                try:
-                    img_url = await call_openai_image_gen(req.prompt); result = "Imagen generada con DALL-E 3."; label = "openai · dall-e-3"
-                except Exception as e:
-                    if "quota" in str(e).lower() or "billing" in str(e).lower(): raise HTTPException(402, "Sin créditos en OpenAI.")
-                    raise
-            else:
-                import urllib.parse
-                img_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(req.prompt)}?width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
-                result = "Imagen generada con Pollinations AI."; label = "pollinations · imagen"
+            img_url, result, label = await generate_image_smart(req.prompt)
 
         elif task == "realtime":
             if TAVILY_KEY:
