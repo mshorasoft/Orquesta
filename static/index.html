@@ -548,8 +548,7 @@ function addMsg(role, content, meta, imgUrl, filename, fileData, ttsUrl){
 // ── FORMAT ──
 function fmt(t){
   return t
-    .replace(/```(\w*)
-?([\s\S]*?)```/g,'<pre><code>$2</code></pre>')
+    .replace(/```(\w*)[\n]?([\s\S]*?)```/g,'<pre><code>$2</code></pre>')
     .replace(/`([^`]+)`/g,'<code>$1</code>')
     .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
     .replace(/\*(.*?)\*/g,'<em style="color:var(--text2)">$1</em>')
@@ -557,8 +556,7 @@ function fmt(t){
     .replace(/^## (.+)$/gm,'<strong style="font-size:1.05em;display:block;margin:12px 0 4px;color:var(--text)">$1</strong>')
     .replace(/^# (.+)$/gm,'<strong style="font-size:1.1em;display:block;margin:14px 0 5px;color:var(--text)">$1</strong>')
     .replace(/^- (.+)$/gm,'<span style="display:block;padding-left:10px;margin:2px 0">· $1</span>')
-    .replace(/
-/g,'<br>');
+    .replace(/\n/g,'<br>');
 }
 
 // ── MANUAL TTS ──
