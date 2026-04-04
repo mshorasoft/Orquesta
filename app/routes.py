@@ -648,4 +648,4 @@ async def speech_to_text(file: UploadFile = File(...)):
 @router.get("/status")
 async def status():
     return {"groq":bool(GROQ_KEY),"tavily":bool(TAVILY_KEY),"gemini":bool(GEMINI_KEY),
-            "openai":bool(OPENAI_KEY),"file_generation":True,"tts":bool(OPENAI_KEY)
+            "openai":bool(OPENAI_KEY),"file_generation":True,"tts":bool(OPENAI_KEY)}
