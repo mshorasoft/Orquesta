@@ -281,7 +281,7 @@ a:hover{text-decoration:underline}
         <button class="fp-rm" onclick="rmFile()">×</button>
       </div>
       <div class="input-top">
-        <textarea id="prompt-input" placeholder="Preguntá, pedí una imagen, generá un Excel/Word/PDF, subí un archivo..." rows="1" onkeydown="onKey(event)" oninput="resize(this)"></textarea>
+        <textarea id="prompt-input" placeholder="Preguntá, pedí una imagen, generá un Excel/Word/PDF, subí un archivo..." rows="1" onkeydown="onKey(event)" oninput="resize(this)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
         <div class="ibtns">
           <button class="ibtn" id="mic-btn" onclick="toggleMic()" title="Hablar">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="5" y="1" width="6" height="9" rx="3" stroke="var(--text2)" stroke-width="1.3"/><path d="M2 8a6 6 0 0012 0" stroke="var(--text2)" stroke-width="1.3" stroke-linecap="round" fill="none"/><line x1="8" y1="14" x2="8" y2="16" stroke="var(--text2)" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -318,6 +318,12 @@ window.addEventListener('load',()=>{
   updateTTSBtn();
   renderHist();
   document.getElementById('prompt-input').focus();
+  // Verificar backend al cargar
+  fetch('/api/health').then(r=>r.json()).then(d=>{
+    console.log('Backend OK:', d);
+  }).catch(e=>{
+    console.warn('Backend no responde en /api/health:', e);
+  });
 });
 
 function setName(v){ username=v.trim(); localStorage.setItem('orq_u',username); applyName(username); }
@@ -674,7 +680,9 @@ async function send(){
     saveSession();
   }catch(err){
     document.getElementById('typing-msg')?.remove();
-    addMsg('ai',`❌ Error: ${err.message}`);
+    const errMsg = err.message || 'Error desconocido';
+    addMsg('ai',`❌ Error al conectar con el servidor: ${errMsg}. Verificá que el backend esté activo en Railway.`);
+    console.error('Error en send():', err);
   }
   loading=false;
   document.getElementById('send-btn').disabled=false;
