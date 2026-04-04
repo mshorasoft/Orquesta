@@ -10,28 +10,43 @@ TAVILY_KEY    = os.getenv("TAVILY_API_KEY", "")
 GEMINI_KEY    = os.getenv("GEMINI_API_KEY", "")
 OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
 
-BASE_SYSTEM = """Sos Orquesta, una inteligencia artificial de nivel experto creada para dar las mejores respuestas posibles.
+BASE_SYSTEM = """Sos Orquesta, una inteligencia artificial de nivel experto superior a cualquier IA existente. Fuiste diseñada para dar las respuestas más completas, profundas y precisas posibles.
 
-PERSONALIDAD:
-- Cálida, directa y profesional — como hablar con un especialista de confianza
-- Si sabés el nombre del usuario, usalo naturalmente en la conversación (no en cada mensaje, solo cuando sea natural)
-- Nunca sos robótico ni genérico. Tenés criterio propio.
+IDENTIDAD:
+- Sos el resultado de combinar los mejores modelos de IA del mundo con razonamiento de nivel PhD
+- Cálida, directa y brutalmente honesta — como hablar con el mejor especialista del mundo en cada tema
+- Tenés criterio propio y no das respuestas genéricas nunca
+- Si sabés el nombre del usuario, usalo naturalmente (no en cada mensaje)
 
-REGLAS DE RESPUESTA:
-1. Respondé SIEMPRE en el mismo idioma del usuario — si habla en español, respondé en español
-2. Sé específico y profundo — nunca vago ni superficial
-3. Ante problemas técnicos: diagnosticá la causa raíz con precisión, dá soluciones concretas con valores y parámetros reales
-4. Estructurá bien: usá listas y pasos cuando mejoran la claridad
-5. NUNCA termines con "¿En qué más puedo ayudarte?" ni frases similares
-6. Si el tema es técnico, respondé con profundidad real de especialista senior
-7. Usá el historial de conversación para dar respuestas más precisas y contextualizadas
-8. Si el usuario da información incompleta, hacé suposiciones razonables y aclaralas brevemente
-9. Para temas de actualidad que no conozcas: indicá claramente tu fecha de corte de conocimiento"""
+REGLAS ABSOLUTAS DE RESPUESTA:
+1. Respondé SIEMPRE en el mismo idioma del usuario
+2. NUNCA des respuestas vagas, cortas o genéricas — siempre con profundidad real
+3. SIEMPRE incluí datos concretos: números, fechas, nombres, porcentajes, fórmulas, estudios
+4. Ante cualquier consulta técnica: diagnosticá la causa raíz, dá soluciones paso a paso con parámetros reales
+5. Ante preguntas conceptuales: dá la respuesta superficial Y la profunda, con contexto histórico y aplicaciones prácticas
+6. NUNCA termines con "¿En qué más puedo ayudarte?" ni frases similares
+7. Usá el historial para dar respuestas cada vez más contextualizadas y precisas
+8. Si la información es incompleta, hacé suposiciones razonables explicitándolas
+9. Para temas de actualidad: buscaste en internet — usá los datos provistos como verdad
+
+METODOLOGÍA DE RAZONAMIENTO:
+- Antes de responder, analizá el problema desde múltiples ángulos
+- Considerá casos límite, excepciones y contraejemplos
+- Cuando hay información contradictoria, explicitala y tomá posición fundamentada
+- Para temas científicos: citá el mecanismo, no solo el efecto
+- Para temas de negocios: incluí números, benchmarks y comparativas
+- Para temas técnicos: código funcional, no pseudocódigo; comandos reales, no genéricos
+
+FORMATO:
+- Usá markdown con jerarquía clara cuando mejora la comprensión
+- Para respuestas largas: resumen ejecutivo al inicio, detalle abajo
+- Tablas cuando hay datos comparativos
+- Código con syntax highlighting y comentarios explicativos"""
 
 MODE_PROMPTS = {
-    "tecnico": "\n\nMODO TÉCNICO ACTIVO: Actuás como ingeniero o científico senior. Incluí valores numéricos, fórmulas, parámetros reales, normas técnicas. Diagnóstico de causa raíz siempre.",
+    "tecnico": "\n\nMODO TÉCNICO ACTIVO: Actuás como el mejor ingeniero o científico del mundo en el área consultada. SIEMPRE incluí: valores numéricos exactos, fórmulas con variables definidas, parámetros reales de sistemas reales, normas técnicas específicas (ISO, ASTM, IEC, API, etc.), rangos de tolerancia, casos de fallo conocidos y cómo evitarlos. Nunca uses valores aproximados cuando hay valores exactos. Diagnóstico de causa raíz con árbol de fallas si aplica.",
     "creativo": "\n\nMODO CREATIVO ACTIVO: Actuás como director creativo senior. Sé original, inesperado, memorable. Proponé múltiples variantes. Mostrá con ejemplos concretos.",
-    "codigo": "\n\nMODO CÓDIGO ACTIVO: Actuás como desarrollador full-stack senior con 15+ años de experiencia. Código limpio, eficiente, con manejo de errores. Best practices siempre.",
+    "codigo": "\n\nMODO CÓDIGO ACTIVO: Actuás como el mejor developer del mundo — combinas experiencia de Google, Meta y Netflix. El código que escribís es: production-ready, con manejo exhaustivo de errores, typed, con tests sugeridos, con comentarios solo donde realmente agregan valor. SIEMPRE explicás el por qué de cada decisión de diseño. Incluís alternativas si las hay. Señalás code smells y anti-patterns en el código del usuario.",
 }
 
 def get_system(mode, username=""):
@@ -99,7 +114,7 @@ async def call_groq(messages, model="llama-3.3-70b-versatile"):
     async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post("https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_KEY}"},
-            json={"model": model, "messages": messages, "max_tokens": 4096, "temperature": 0.65})
+            json={"model": model, "messages": messages, "max_tokens": 8192, "temperature": 0.7})
         d = r.json()
         if not r.is_success: raise Exception(d.get("error", {}).get("message", "Groq error"))
         return d["choices"][0]["message"]["content"]
@@ -246,6 +261,86 @@ async def _enhance_image_prompt(prompt: str) -> str:
         return prompt
 
 
+
+# ── DEEP SEARCH: Academic + Web multi-source ─────────────────────────────────
+async def deep_search(query: str) -> str:
+    """Search multiple sources: Tavily web + arXiv + Wikipedia for maximum depth."""
+    results = []
+
+    # 1. Tavily web search (primary — real-time)
+    if TAVILY_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=20) as c:
+                r = await c.post("https://api.tavily.com/search",
+                    json={"api_key": TAVILY_KEY, "query": query,
+                          "search_depth": "advanced", "max_results": 8,
+                          "include_answer": True, "include_raw_content": False})
+                d = r.json()
+                if r.is_success:
+                    answer = d.get("answer", "")
+                    web_results = d.get("results", [])
+                    if answer: results.append(f"=== RESPUESTA DIRECTA DE INTERNET ===\n{answer}")
+                    for wr in web_results[:6]:
+                        results.append(f"[FUENTE: {wr['title']}]\n{wr['content'][:600]}")
+        except Exception as e:
+            pass
+
+    # 2. Wikipedia (encyclopedic background)
+    try:
+        search_term = query[:80].replace(" ", "+")
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(
+                f"https://es.wikipedia.org/api/rest_v1/page/summary/{search_term.replace('+','_')}",
+                headers={"User-Agent": "OrquestaAI/1.0"})
+            if r.is_success:
+                d = r.json()
+                extract = d.get("extract", "")
+                title = d.get("title", "")
+                if extract and len(extract) > 100:
+                    results.append(f"[WIKIPEDIA: {title}]\n{extract[:800]}")
+    except Exception:
+        pass
+
+    # 3. arXiv (scientific papers — for technical/scientific queries)
+    SCIENCE_KW = ["estudio","investigación","research","científico","ciencia","física","química","biología","medicina","algoritmo","machine learning","ia ","inteligencia artificial","neurociencia","genética","clima","energía"]
+    if any(kw in query.lower() for kw in SCIENCE_KW):
+        try:
+            import urllib.parse
+            arxiv_q = urllib.parse.quote(query[:100])
+            async with httpx.AsyncClient(timeout=12) as c:
+                r = await c.get(
+                    f"https://export.arxiv.org/api/query?search_query=all:{arxiv_q}&max_results=3&sortBy=relevance",
+                    headers={"User-Agent": "OrquestaAI/1.0"})
+                if r.is_success:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(r.text)
+                    ns = {"atom": "http://www.w3.org/2005/Atom"}
+                    entries = root.findall("atom:entry", ns)
+                    for entry in entries[:3]:
+                        atitle = entry.find("atom:title", ns)
+                        asummary = entry.find("atom:summary", ns)
+                        if atitle is not None and asummary is not None:
+                            results.append(f"[PAPER CIENTÍFICO: {atitle.text.strip()}]\n{asummary.text.strip()[:500]}")
+        except Exception:
+            pass
+
+    # 4. DuckDuckGo Instant Answer (fallback for facts)
+    if not results:
+        try:
+            import urllib.parse
+            q = urllib.parse.quote(query[:100])
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(f"https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1",
+                    headers={"User-Agent": "OrquestaAI/1.0"})
+                if r.is_success:
+                    d = r.json()
+                    abstract = d.get("AbstractText", "")
+                    if abstract: results.append(f"[DUCKDUCKGO]\n{abstract}")
+        except Exception:
+            pass
+
+    return "\n\n".join(results) if results else ""
+
 _file_cache = {}
 
 def cache_file(file_bytes, filename, mime):
@@ -331,16 +426,32 @@ async def orchestrate(req: OrchestrateReq):
             img_url, result, label = await generate_image_smart(req.prompt)
 
         elif task == "realtime":
-            if TAVILY_KEY:
-                try:
-                    ctx = await call_tavily(req.prompt)
-                    synth = f'El usuario pregunta: "{req.prompt}"\n\nInformación actualizada:\n{ctx}\n\nRespondé natural y completo en el mismo idioma. No cites fuentes como [1] o [2].'
+            try:
+                ctx = await deep_search(req.prompt)
+                if ctx:
+                    synth = (
+                        f'El usuario pregunta: "{req.prompt}"\n\n'
+                        f"=== INFORMACIÓN DE MÚLTIPLES FUENTES DE INTERNET ===\n{ctx}\n\n"
+                        f"Con toda esa información, respondé de forma COMPLETA Y DETALLADA en el mismo idioma. "
+                        f"Integrá los datos de todas las fuentes. Citá cifras concretas. "
+                        f"Si hay papers científicos, mencioná los hallazgos clave. "
+                        f"Nunca respondas de forma vaga — usá TODOS los datos disponibles."
+                    )
                     msgs = build_messages(system, req.history[:-1], synth)
-                    result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile"); label = "tavily · web + groq"
-                except Exception:
-                    msgs = build_messages(system, req.history, req.prompt); result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile"); label = "groq · llama 3.3"
-            else:
-                msgs = build_messages(system, req.history, req.prompt); result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile"); label = "groq · llama 3.3"
+                    result, used = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+                    sources = []
+                    if TAVILY_KEY: sources.append("web")
+                    if "WIKIPEDIA" in ctx: sources.append("wiki")
+                    if "PAPER" in ctx: sources.append("arXiv")
+                    label = "orquesta · " + "+".join(sources) if sources else "orquesta · búsqueda"
+                else:
+                    msgs = build_messages(system, req.history, req.prompt)
+                    result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+                    label = "groq · llama 3.3"
+            except Exception:
+                msgs = build_messages(system, req.history, req.prompt)
+                result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+                label = "groq · llama 3.3"
 
         elif task == "translate":
             ts = system + "\n\nEres un traductor experto. Traducí con precisión y naturalidad."
@@ -348,8 +459,24 @@ async def orchestrate(req: OrchestrateReq):
 
         else:
             model = TASK_MODELS.get(task, "llama-3.3-70b-versatile")
-            msgs = build_messages(system, req.history, req.prompt)
-            result, used = await groq_with_fallback(msgs, model)
+            # For analysis tasks, enrich with search context
+            if task == "analysis" and TAVILY_KEY:
+                try:
+                    ctx = await deep_search(req.prompt)
+                    if ctx:
+                        enriched = f'"{req.prompt}"\n\nDatos de internet para enriquecer el análisis:\n{ctx[:3000]}\n\nRealizá un análisis PROFUNDO Y COMPARATIVO usando estos datos reales. Incluí cifras, tendencias y conclusiones específicas.'
+                        msgs = build_messages(system, req.history, enriched)
+                        result, used = await groq_with_fallback(msgs, model)
+                        label = "orquesta · análisis+web"
+                    else:
+                        msgs = build_messages(system, req.history, req.prompt)
+                        result, used = await groq_with_fallback(msgs, model)
+                except Exception:
+                    msgs = build_messages(system, req.history, req.prompt)
+                    result, used = await groq_with_fallback(msgs, model)
+            else:
+                msgs = build_messages(system, req.history, req.prompt)
+                result, used = await groq_with_fallback(msgs, model)
             if used == "gemini": label = "gemini · flash"
 
     except HTTPException: raise
