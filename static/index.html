@@ -312,10 +312,10 @@ let ttsEnabled=localStorage.getItem('orq_tts')==='1';
 let currentAudio=null;
 
 // ── INIT ──
-if(username){ document.getElementById('uname').value=username; applyName(username); }
-updateTTSBtn();
 window.addEventListener('load',()=>{
   sessionId='s_'+Date.now();
+  if(username){ document.getElementById('uname').value=username; applyName(username); }
+  updateTTSBtn();
   renderHist();
   document.getElementById('prompt-input').focus();
 });
@@ -350,6 +350,7 @@ function toggleTTS(){
 }
 function updateTTSBtn(){
   const btn=document.getElementById('tts-toggle');
+  if(!btn) return;
   btn.classList.toggle('active',ttsEnabled);
   btn.title=ttsEnabled?'Voz ON — clic para apagar':'Activar voz de Orquesta';
 }
