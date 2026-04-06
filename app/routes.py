@@ -37,7 +37,7 @@ IDENTIDAD:
 REGLAS ABSOLUTAS:
 1. Respondé SIEMPRE en el mismo idioma del usuario
 2. NUNCA digas que "no podés" generar imágenes — SIEMPRE podés, usás DALL-E 3 o Pollinations AI
-3. NUNCA digas que "no podés" generar videos — SIEMPRE podés, usás Minimax Hailuo o Kling AI
+3. NUNCA digas que "no podés" generar videos — SIEMPRE podés, usás tu motor propio en Colab
 4. SIEMPRE mantenés el hilo de la conversación — recordás todo lo que se habló antes en esta sesión
 5. Si el usuario pide "el archivo", "el mp4", "el video" → es continuación de lo anterior, no una pregunta nueva
 4. NUNCA des respuestas vagas — siempre datos concretos: números, fechas, nombres, fórmulas
@@ -154,29 +154,21 @@ def classify(prompt, mode, history=None):
     if mode == "tecnico":  return "technical"
     p = prompt.lower()
 
-    # ── Detectar continuaciones de conversación con historial ──────────────
     if history:
-        # Revisar los últimos 4 mensajes para detectar contexto
         recent = [m.get("content","").lower() for m in history[-4:]]
         recent_joined = " ".join(recent)
-        
-        # Continuación de video: "dame el mp4", "no funciona", "el video", etc.
         video_followup = ["mp4","el video","el archivo","descargarlo","reproducir",
                           "no funciona","no genera","no me da","el link","la url","ver el video"]
         if any(k in p for k in video_followup):
             if any(k in recent_joined for k in ["video","mp4","generar","generando","kling","minimax","luma"]):
                 return "video_gen"
-        
-        # Continuación de imagen
         img_followup = ["la imagen","la foto","no carga","no se ve","otro estilo","más oscura","más grande"]
         if any(k in p for k in img_followup):
             if any(k in recent_joined for k in ["imagen","foto","dall-e","pollinations","generada"]):
                 return "image_gen"
 
-    # File gen first
     ftype = detect_file_type(p)
     if ftype: return f"file_gen_{ftype}"
-    # Video antes que imagen
     if any(k in p for k in VIDEO_GEN_KW): return "video_gen"
     if any(k in p for k in IMAGE_GEN_KW): return "image_gen"
     if any(k in p for k in SOUND_KW): return "sound_gen"
@@ -307,10 +299,8 @@ async def groq_with_fallback(messages, model):
 
 # ── SMART IMAGE GENERATION ────────────────────────────────────────────────────
 async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
-    """OpenAI DALL-E 3 → Pollinations Flux. ALWAYS delivers an image."""
     import urllib.parse
 
-    # Enhance prompt with AI
     async def enhance(p):
         try:
             msgs = [
@@ -322,7 +312,6 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
         except:
             return p
 
-    # 1. OpenAI DALL-E 3
     if OPENAI_KEY:
         try:
             url = await call_openai_image_gen(prompt)
@@ -330,9 +319,8 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
         except Exception as e:
             err = str(e).lower()
             if not any(x in err for x in ["quota","billing","insufficient","policy","safety"]):
-                pass  # unexpected error, try fallback
+                pass
 
-    # 2. Pollinations AI Flux (free, no key)
     try:
         enhanced = await enhance(prompt)
         seed = int(time.time()) % 99999
@@ -342,44 +330,30 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
     except:
         pass
 
-    # 3. Fallback básico
     seed = int(time.time()) % 99999
     encoded = urllib.parse.quote(prompt[:400])
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={seed}&nofeed=true"
     return url, "🎨 Imagen generada.", "pollinations · imagen"
 
 
-
-# ── GENERACIÓN DE VIDEO: Fal.ai → Segmind → ModelsLab → Replicate → Minimax → Kling ──
+# ── GENERACIÓN DE VIDEO ───────────────────────────────────────────────────────
 async def generate_video_smart(prompt: str, history=None, mode="general", username="") -> tuple[str, str, str]:
-    """
-    Cadena de generación de video priorizando opciones gratuitas:
-    1. Fal.ai          (FAL_API_KEY)      — $10 gratis sin tarjeta, ~300 videos
-    2. Segmind         (SEGMIND_API_KEY)  — 100 créditos/mes gratis renovables
-    3. ModelsLab       (MODELSLAB_API_KEY)— 100 créditos gratis
-    4. Replicate       (REPLICATE_API_KEY)— crédito inicial, muy barato
-    5. Minimax Hailuo  (MINIMAX_API_KEY)  — si tiene créditos
-    6. Kling AI        (KLING_ACCESS_KEY + KLING_SECRET_KEY) — si tiene créditos
-    7. Fallback        — descripción cinematográfica + instrucciones
-    """
     import urllib.parse
 
-    # Nuestro motor propio (RunPod) — máxima prioridad
     VIDEOGEN_URL = os.getenv("VIDEOGEN_URL", "").rstrip("/")
     VIDEOGEN_KEY = os.getenv("VIDEOGEN_API_KEY", "")
 
-    HF_KEY       = os.getenv("HUGGINGFACE_API_KEY", "")
-    FAL_KEY      = os.getenv("FAL_API_KEY", "")
-    SEGMIND_KEY  = os.getenv("SEGMIND_API_KEY", "")
+    HF_KEY        = os.getenv("HUGGINGFACE_API_KEY", "")
+    FAL_KEY       = os.getenv("FAL_API_KEY", "")
+    SEGMIND_KEY   = os.getenv("SEGMIND_API_KEY", "")
     MODELSLAB_KEY = os.getenv("MODELSLAB_API_KEY", "")
     REPLICATE_KEY = os.getenv("REPLICATE_API_KEY", "")
-    MINIMAX_KEY  = os.getenv("MINIMAX_API_KEY", "")
-    KLING_AK     = os.getenv("KLING_ACCESS_KEY", "")
-    KLING_SK     = os.getenv("KLING_SECRET_KEY", "")
+    MINIMAX_KEY   = os.getenv("MINIMAX_API_KEY", "")
+    KLING_AK      = os.getenv("KLING_ACCESS_KEY", "")
+    KLING_SK      = os.getenv("KLING_SECRET_KEY", "")
 
     errors = {}
 
-    # Mejorar prompt con Groq
     async def enhance(p):
         try:
             msgs = [
@@ -393,54 +367,36 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
 
     enhanced = await enhance(prompt)
 
-    # ── 0. ORQUESTA VIDEOGEN (motor propio en RunPod) ────────────────────────
+    # ── 0. ORQUESTA VIDEOGEN (Colab propio) — MÁXIMA PRIORIDAD ──────────────
     if VIDEOGEN_URL and VIDEOGEN_KEY:
         try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                # Iniciar generación
+            async with httpx.AsyncClient(timeout=180) as c:
                 r = await c.post(
                     f"{VIDEOGEN_URL}/generate",
-                    headers={"x-api-key": VIDEOGEN_KEY, "Content-Type": "application/json"},
-                    json={"prompt": enhanced, "num_frames": 49, "fps": 12}
+                    headers={
+                        "x-api-key": VIDEOGEN_KEY,
+                        "Content-Type": "application/json",
+                        "ngrok-skip-browser-warning": "true"
+                    },
+                    json={"prompt": enhanced, "num_frames": 16, "num_steps": 25}
                 )
                 if r.status_code == 200:
-                    job_id = r.json().get("job_id", "")
-                    if job_id:
-                        # Polling: esperar hasta 3 minutos
-                        async with httpx.AsyncClient(timeout=20) as c2:
-                            for _ in range(36):
-                                await asyncio.sleep(5)
-                                sr = await c2.get(
-                                    f"{VIDEOGEN_URL}/status/{job_id}",
-                                    headers={"x-api-key": VIDEOGEN_KEY}
-                                )
-                                sd = sr.json()
-                                if sd.get("status") == "done":
-                                    # Descargar el video y cachearlo
-                                    vr = await c2.get(
-                                        f"{VIDEOGEN_URL}/download/{job_id}",
-                                        headers={"x-api-key": VIDEOGEN_KEY}
-                                    )
-                                    if vr.status_code == 200:
-                                        import uuid as _uuid
-                                        token = str(_uuid.uuid4())
-                                        _file_cache[token] = (vr.content, "video.mp4", "video/mp4")
-                                        dur = sd.get("duration_s", "?")
-                                        return f"/api/download/{token}", f"🎬 Video generado con **Orquesta VideoGen** (motor propio, {dur}s).", "orquesta · videogen"
-                                elif sd.get("status") == "failed":
-                                    errors["videogen"] = sd.get("error", "failed")[:100]
-                                    break
+                    rd = r.json()
+                    if rd.get("success"):
+                        video_url = f"{VIDEOGEN_URL}{rd.get('download_url','')}"
+                        return video_url, "🎬 Video generado con **Orquesta VideoGen** (motor propio).", "orquesta · videogen"
+                    else:
+                        errors["videogen"] = rd.get("error", "Error desconocido")[:100]
                 else:
                     errors["videogen"] = f"HTTP {r.status_code}: {r.text[:100]}"
         except Exception as e:
             errors["videogen"] = str(e)[:100]
 
-    # ── 0b. HUGGING FACE Inference API (nueva URL 2024) ──────────────────────
+    # ── 1. HUGGING FACE ───────────────────────────────────────────────────────
     if HF_KEY:
         for hf_model in ["cerspense/zeroscope_v2_576w", "damo-vilab/text-to-video-ms-1.7b"]:
             try:
                 async with httpx.AsyncClient(timeout=120) as c:
-                    # Nueva URL del Inference API de HuggingFace
                     r = await c.post(
                         f"https://router.huggingface.co/hf-inference/models/{hf_model}",
                         headers={"Authorization": f"Bearer {HF_KEY}", "Content-Type": "application/json"},
@@ -449,8 +405,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                     if r.status_code == 200:
                         ct = r.headers.get("content-type", "")
                         if "video" in ct or "octet-stream" in ct or len(r.content) > 5000:
-                            import uuid as _uuid
-                            token = str(_uuid.uuid4())
+                            token = str(uuid.uuid4())
                             _file_cache[token] = (r.content, "video.mp4", "video/mp4")
                             short = hf_model.split("/")[-1][:20]
                             return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({short}).", "huggingface · free"
@@ -464,8 +419,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                             json={"inputs": enhanced[:200]}
                         )
                         if r2.status_code == 200 and len(r2.content) > 5000:
-                            import uuid as _uuid
-                            token = str(_uuid.uuid4())
+                            token = str(uuid.uuid4())
                             _file_cache[token] = (r2.content, "video.mp4", "video/mp4")
                             short = hf_model.split("/")[-1][:20]
                             return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({short}).", "huggingface · free"
@@ -474,11 +428,10 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
             except Exception as e:
                 errors[f"hf_{hf_model[-10:]}"] = str(e)[:80]
 
-    # ── 1. FAL.AI (gratis $10 sin tarjeta) ───────────────────────────────────
+    # ── 2. FAL.AI ─────────────────────────────────────────────────────────────
     if FAL_KEY:
         try:
             async with httpx.AsyncClient(timeout=60) as c:
-                # Enviar tarea
                 r = await c.post(
                     "https://queue.fal.run/fal-ai/fast-animatediff/text-to-video",
                     headers={"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"},
@@ -488,7 +441,6 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                 if r.status_code in (200, 201):
                     request_id = rd.get("request_id", "")
                     if request_id:
-                        # Polling resultado
                         async with httpx.AsyncClient(timeout=20) as c2:
                             for _ in range(24):
                                 await asyncio.sleep(5)
@@ -500,7 +452,6 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                                 if sd.get("status") == "COMPLETED":
                                     video_url = sd.get("response", {}).get("video", {}).get("url", "")
                                     if not video_url:
-                                        # Intentar otra estructura de respuesta
                                         outputs = sd.get("response", {})
                                         if isinstance(outputs, dict):
                                             for v in outputs.values():
@@ -512,14 +463,12 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                                 elif sd.get("status") == "FAILED":
                                     errors["fal"] = str(sd.get("error", "Failed"))
                                     break
-                    else:
-                        errors["fal"] = f"HTTP {r.status_code}: {str(rd)[:150]}"
                 else:
                     errors["fal"] = f"HTTP {r.status_code}: {str(rd)[:150]}"
         except Exception as e:
             errors["fal"] = str(e)[:100]
 
-    # ── 2. SEGMIND (100 créditos/mes gratis) ─────────────────────────────────
+    # ── 3. SEGMIND ────────────────────────────────────────────────────────────
     if SEGMIND_KEY:
         try:
             async with httpx.AsyncClient(timeout=120) as c:
@@ -538,9 +487,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                     }
                 )
                 if r.status_code == 200 and r.headers.get("content-type","").startswith("video"):
-                    # Respuesta directa como video binario
-                    import uuid as _uuid
-                    token = str(_uuid.uuid4())
+                    token = str(uuid.uuid4())
                     _file_cache[token] = (r.content, "video.mp4", "video/mp4")
                     return f"/api/download/{token}", "🎬 Video generado con **Segmind** (SVD).", "segmind · svd"
                 else:
@@ -549,7 +496,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["segmind"] = str(e)[:100]
 
-    # ── 3. MODELSLAB (100 créditos gratis) ───────────────────────────────────
+    # ── 4. MODELSLAB ──────────────────────────────────────────────────────────
     if MODELSLAB_KEY:
         try:
             async with httpx.AsyncClient(timeout=30) as c:
@@ -595,7 +542,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["modelslab"] = str(e)[:100]
 
-    # ── 4. REPLICATE ──────────────────────────────────────────────────────────
+    # ── 5. REPLICATE ──────────────────────────────────────────────────────────
     if REPLICATE_KEY:
         try:
             async with httpx.AsyncClient(timeout=30) as c:
@@ -631,7 +578,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["replicate"] = str(e)[:100]
 
-    # ── 5. MINIMAX (si tiene créditos) ────────────────────────────────────────
+    # ── 6. MINIMAX ────────────────────────────────────────────────────────────
     if MINIMAX_KEY:
         try:
             async with httpx.AsyncClient(timeout=60) as c:
@@ -672,7 +619,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["minimax"] = str(e)[:100]
 
-    # ── 6. KLING (si tiene créditos) ──────────────────────────────────────────
+    # ── 7. KLING ──────────────────────────────────────────────────────────────
     if KLING_AK and KLING_SK:
         try:
             token = _make_kling_jwt(KLING_AK, KLING_SK)
@@ -710,7 +657,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["kling"] = str(e)[:100]
 
-    # ── 7. FALLBACK ───────────────────────────────────────────────────────────
+    # ── 8. FALLBACK ───────────────────────────────────────────────────────────
     video_system = (
         get_system(mode, username) +
         "\n\nIMPORTANTE: El usuario pidió un video con IA. "
@@ -723,7 +670,6 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                                f"Video pedido: {prompt}\nPrompt mejorado: {enhanced}")
     description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
 
-    # Debug info
     debug_info = ""
     if errors:
         errs_str = " | ".join([f"{k}: `{v[:80]}`" for k,v in errors.items()])
@@ -734,7 +680,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         f"**⚙️ Para generar este video automáticamente**, registrate gratis y agregá en Railway:\n\n"
         f"| Variable | Servicio | Gratis |\n"
         f"|---|---|---|\n"
-        f"| `VIDEOGEN_URL` + `VIDEOGEN_API_KEY` | Motor propio RunPod | ✅ ~$0.10/día solo cuando usás |\n"
+        f"| `VIDEOGEN_URL` + `VIDEOGEN_API_KEY` | Motor propio Colab | ✅ Gratis con GPU de Google |\n"
         f"| `HUGGINGFACE_API_KEY` | [HuggingFace](https://huggingface.co) | ✅ Gratis permanente |\n"
         f"| `FAL_API_KEY` | [Fal.ai](https://fal.ai) | ✅ $10 sin tarjeta (~300 videos) |\n"
         f"| `SEGMIND_API_KEY` | [Segmind](https://segmind.com) | ✅ 100 créditos/mes renovables |\n"
@@ -748,19 +694,17 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
 async def deep_search(query: str) -> str:
     results = []
 
-    # 1. Tavily (web real-time)
     if TAVILY_KEY:
         try:
             ctx = await call_tavily(query, depth="advanced", max_results=8)
             if ctx: results.append(f"=== WEB (TIEMPO REAL) ===\n{ctx}")
         except: pass
 
-    # 2. Wikipedia ES
     try:
         import urllib.parse
-        term = urllib.parse.quote(query.split()[0:4].__class__.__name__ and " ".join(query.split()[:4]))
+        term = urllib.parse.quote(query[:60])
         async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.get(f"https://es.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(query[:60])}",
+            r = await c.get(f"https://es.wikipedia.org/api/rest_v1/page/summary/{term}",
                 headers={"User-Agent":"OrquestaAI/1.0"})
             if r.is_success:
                 d = r.json()
@@ -769,7 +713,6 @@ async def deep_search(query: str) -> str:
                     results.append(f"=== WIKIPEDIA: {d.get('title','')} ===\n{extract[:800]}")
     except: pass
 
-    # 3. arXiv para consultas científicas
     SCIENCE_KW = ["estudio","investigación","research","científico","ciencia","física","química",
                   "biología","medicina","algoritmo","machine learning","ia ","inteligencia artificial",
                   "neurociencia","genética","clima","energía","quantum","astro"]
@@ -789,7 +732,6 @@ async def deep_search(query: str) -> str:
                             results.append(f"=== PAPER CIENTÍFICO: {t.text.strip()} ===\n{s.text.strip()[:500]}")
         except: pass
 
-    # 4. DuckDuckGo fallback
     if not results:
         try:
             import urllib.parse
@@ -849,7 +791,7 @@ class OrchestrateReq(BaseModel):
     mode: str = "general"
     username: str = ""
     language: str = ""
-    tts_enabled: bool = False   # si el cliente quiere audio de la respuesta
+    tts_enabled: bool = False
 
 class OrchestrateResp(BaseModel):
     result: str
@@ -860,8 +802,8 @@ class OrchestrateResp(BaseModel):
     file_url: str = ""
     file_type: str = ""
     file_name: str = ""
-    tts_url: str = ""           # URL del audio si tts_enabled=True
-    video_url: str = ""         # URL del video generado
+    tts_url: str = ""
+    video_url: str = ""
 
 
 # ── MAIN ENDPOINT ─────────────────────────────────────────────────────────────
@@ -875,7 +817,6 @@ async def orchestrate(req: OrchestrateReq):
     system = get_system(req.mode, req.username)
 
     try:
-        # ── ARCHIVOS ──────────────────────────────────────────────────────────
         if task.startswith("file_gen_"):
             ftype = task.replace("file_gen_","")
             try:
@@ -889,15 +830,12 @@ async def orchestrate(req: OrchestrateReq):
             except Exception as e:
                 result = f"Error generando el archivo: {str(e)[:200]}. Reformulá tu pedido."
 
-        # ── VIDEO ────────────────────────────────────────────────────────────
         elif task == "video_gen":
             video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, req.username)
 
-        # ── IMÁGENES ──────────────────────────────────────────────────────────
         elif task == "image_gen":
             img_url, result, label = await generate_image_smart(req.prompt)
 
-        # ── BÚSQUEDA TIEMPO REAL ──────────────────────────────────────────────
         elif task == "realtime":
             try:
                 ctx = await deep_search(req.prompt)
@@ -921,7 +859,6 @@ async def orchestrate(req: OrchestrateReq):
                 msgs = build_messages(system, req.history, req.prompt)
                 result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
 
-        # ── SONIDO (placeholder informativo) ──────────────────────────────────
         elif task == "sound_gen":
             result = ("🎵 La generación de audio/música requiere créditos en APIs especializadas como **ElevenLabs** o **Suno AI**.\n\n"
                       "Configurá `ELEVENLABS_API_KEY` en Railway para activar esta función.\n\n"
@@ -929,14 +866,12 @@ async def orchestrate(req: OrchestrateReq):
                       "- Escribir la letra si es música\n- Sugerirte prompts para Suno.ai o Udio.com")
             label = "orquesta · sound"
 
-        # ── TRADUCCIÓN ────────────────────────────────────────────────────────
         elif task == "translate":
             ts = system + "\n\nEres un traductor experto. Traducí con precisión y naturalidad."
             msgs = build_messages(ts, req.history, req.prompt)
             result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
             label = "groq · traductor"
 
-        # ── ANÁLISIS (con búsqueda enriquecida) ───────────────────────────────
         elif task == "analysis" and TAVILY_KEY:
             try:
                 ctx = await deep_search(req.prompt)
@@ -953,22 +888,18 @@ async def orchestrate(req: OrchestrateReq):
                 msgs = build_messages(system, req.history, req.prompt)
                 result, _ = await groq_with_fallback(msgs, "mixtral-8x7b-32768")
 
-        # ── TEXTO / CÓDIGO / TÉCNICO / GENERAL ───────────────────────────────
         else:
             model = TASK_MODELS.get(task, "llama-3.3-70b-versatile")
             msgs = build_messages(system, req.history, req.prompt)
             result, used = await groq_with_fallback(msgs, model)
             if used == "gemini": label = "gemini · flash"
 
-        # ── TTS AUTO: leer la respuesta si está habilitado ────────────────────
         if req.tts_enabled and result and OPENAI_KEY and len(result) < 3000 and not file_url:
             try:
-                # Limpiar markdown para TTS
                 clean_text = re.sub(r'```[\s\S]*?```', '', result)
                 clean_text = re.sub(r'[#*`_~>]', '', clean_text)
                 clean_text = re.sub(r'\s+', ' ', clean_text).strip()[:2000]
                 audio_bytes = await call_openai_tts(clean_text, voice="nova")
-                # Cache audio
                 audio_token = str(uuid.uuid4())
                 _file_cache[audio_token] = (audio_bytes, "response.mp3", "audio/mpeg")
                 tts_url = f"/api/download/{audio_token}"
@@ -986,27 +917,25 @@ async def orchestrate(req: OrchestrateReq):
     )
 
 
-
-# ── DEBUG: ver qué keys están configuradas ────────────────────────────────────
+# ── DEBUG ─────────────────────────────────────────────────────────────────────
 @router.get("/debug-config")
 async def debug_config():
-    """Endpoint de diagnóstico - ver qué APIs están configuradas"""
     return {
         "groq": bool(os.getenv("GROQ_API_KEY","")),
         "openai": bool(os.getenv("OPENAI_API_KEY","")),
         "gemini": bool(os.getenv("GEMINI_API_KEY","")),
         "tavily": bool(os.getenv("TAVILY_API_KEY","")),
+        "videogen_url": bool(os.getenv("VIDEOGEN_URL","")),
+        "videogen_key": bool(os.getenv("VIDEOGEN_API_KEY","")),
+        "videogen_url_value": os.getenv("VIDEOGEN_URL","")[:40] + "..." if os.getenv("VIDEOGEN_URL","") else "",
         "status": "ok"
     }
 
 
-# ── TEST MINIMAX: probar conexión directa ─────────────────────────────────────
 @router.get("/test-video-apis")
 async def test_video_apis():
-    """Prueba todas las APIs de video y muestra estado de cada una"""
     results = {}
-    
-    # Test Minimax
+
     mm_key = os.getenv("MINIMAX_API_KEY", "")
     if mm_key:
         try:
@@ -1031,7 +960,6 @@ async def test_video_apis():
     else:
         results["minimax"] = {"error": "No configurada"}
 
-    # Test Kling
     kling_ak = os.getenv("KLING_ACCESS_KEY", "")
     kling_sk = os.getenv("KLING_SECRET_KEY", "")
     if kling_ak and kling_sk:
@@ -1055,12 +983,10 @@ async def test_video_apis():
     else:
         results["kling"] = {"error": "No configurada"}
 
-    # Test Replicate
     rep_key = os.getenv("REPLICATE_API_KEY", "")
     if rep_key:
         try:
             async with httpx.AsyncClient(timeout=10) as c:
-                # Test con endpoint de cuenta (siempre válido si la key es correcta)
                 r = await c.get(
                     "https://api.replicate.com/v1/account",
                     headers={"Authorization": f"Bearer {rep_key}"}
@@ -1077,7 +1003,32 @@ async def test_video_apis():
     else:
         results["replicate"] = {"error": "No configurada"}
 
+    # Test Colab/VideoGen
+    vg_url = os.getenv("VIDEOGEN_URL", "")
+    vg_key = os.getenv("VIDEOGEN_API_KEY", "")
+    if vg_url and vg_key:
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.get(
+                    f"{vg_url}/health",
+                    headers={
+                        "x-api-key": vg_key,
+                        "ngrok-skip-browser-warning": "true"
+                    }
+                )
+                results["colab_videogen"] = {
+                    "url": vg_url[:40]+"...",
+                    "http": r.status_code,
+                    "response": r.json() if r.status_code == 200 else r.text[:100],
+                    "ok": r.status_code == 200
+                }
+        except Exception as e:
+            results["colab_videogen"] = {"error": str(e)}
+    else:
+        results["colab_videogen"] = {"error": "VIDEOGEN_URL o VIDEOGEN_API_KEY no configuradas"}
+
     return results
+
 
 @router.get("/test-minimax")
 async def test_minimax_legacy():
@@ -1170,7 +1121,7 @@ async def upload_file(
             "latency_ms":int((time.time()-t0)*1000),"image_url":img_url,"filename":file.filename}
 
 
-# ── TTS ENDPOINT ──────────────────────────────────────────────────────────────
+# ── TTS ───────────────────────────────────────────────────────────────────────
 @router.post("/tts")
 async def text_to_speech(data: dict):
     if not OPENAI_KEY: raise HTTPException(400, "OPENAI_API_KEY no configurada")
@@ -1195,5 +1146,12 @@ async def speech_to_text(file: UploadFile = File(...)):
 
 @router.get("/status")
 async def status():
-    return {"groq":bool(GROQ_KEY),"tavily":bool(TAVILY_KEY),"gemini":bool(GEMINI_KEY),
-            "openai":bool(OPENAI_KEY),"file_generation":True,"tts":bool(OPENAI_KEY)}
+    return {
+        "groq": bool(GROQ_KEY),
+        "tavily": bool(TAVILY_KEY),
+        "gemini": bool(GEMINI_KEY),
+        "openai": bool(OPENAI_KEY),
+        "videogen": bool(os.getenv("VIDEOGEN_URL","")),
+        "file_generation": True,
+        "tts": bool(OPENAI_KEY)
+    }
