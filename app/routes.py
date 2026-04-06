@@ -437,7 +437,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
 
     # ── 2. KLING AI (Kuaishou) ────────────────────────────────────────────────
     kling_error = ""
-    if KLING_AK and KLING_SK and pyjwt is not None:
+    if KLING_AK and KLING_SK:
         try:
             # Generar JWT para Kling (implementación manual, sin PyJWT)
             token = _make_kling_jwt(KLING_AK, KLING_SK)
@@ -484,8 +484,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                                     break
         except Exception as e:
             kling_error = str(e)
-    elif pyjwt is None:
-        kling_error = "PyJWT no instalado"
+
 
     # ── 3. REPLICATE (Wan2.1 - open source) ──────────────────────────────────
     if REPLICATE_KEY:
