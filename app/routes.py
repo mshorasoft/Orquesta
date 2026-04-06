@@ -471,12 +471,11 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
                     "https://api.replicate.com/v1/predictions",
                     headers={"Authorization": f"Bearer {REPLICATE_KEY}", "Content-Type": "application/json"},
                     json={
-                        "version": "wan-ai/wan2.1-t2v-480p",
+                        "version": "luma/ray-flash-2-540p",
                         "input": {
                             "prompt": enhanced,
-                            "negative_prompt": "blurry, low quality",
-                            "num_frames": 81,
-                            "guidance_scale": 5.0
+                            "duration": "5s",
+                            "aspect_ratio": "16:9"
                         }
                     }
                 )
@@ -828,9 +827,7 @@ async def test_video_apis():
     kling_sk = os.getenv("KLING_SECRET_KEY", "")
     if kling_ak and kling_sk:
         try:
-            now = int(_t.time())
-            import jwt as _jwt
-            token = _jwt.encode({"iss": kling_ak, "exp": now+300, "nbf": now-5}, kling_sk, algorithm="HS256")
+            token = _make_kling_jwt(kling_ak, kling_sk)
             async with httpx.AsyncClient(timeout=15) as c:
                 r = await c.post(
                     "https://api.klingai.com/v1/videos/text2video",
@@ -854,13 +851,16 @@ async def test_video_apis():
     if rep_key:
         try:
             async with httpx.AsyncClient(timeout=10) as c:
+                # Test con endpoint de cuenta (siempre válido si la key es correcta)
                 r = await c.get(
-                    "https://api.replicate.com/v1/models/wan-ai/wan2.1-t2v-480p",
+                    "https://api.replicate.com/v1/account",
                     headers={"Authorization": f"Bearer {rep_key}"}
                 )
+                rd = r.json()
                 results["replicate"] = {
                     "key": rep_key[:8]+"...",
                     "http": r.status_code,
+                    "username": rd.get("username", ""),
                     "ok": r.status_code == 200
                 }
         except Exception as e:
