@@ -351,7 +351,7 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
 
 
 # ── GENERACIÓN DE VIDEO: Minimax → Kling → Replicate (todos free) ────────────
-async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
+async def generate_video_smart(prompt: str, history=None, mode="general", username="") -> tuple[str, str, str]:
     """
     Cadena de generación de video 100% gratuita:
     1. Minimax Hailuo (MINIMAX_API_KEY) - 6s, buena calidad
@@ -527,13 +527,14 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
     # ── FALLBACK: descripción + instrucciones ─────────────────────────────────
     # Sistema con historial completo para coherencia de conversación
     video_system = (
-        get_system(req.mode, req.username) +
+        get_system(mode, username) +
         "\n\nIMPORTANTE: El usuario pidió un video con IA. "
         "Describí el video de forma muy cinematográfica y detallada. "
         "Mantené coherencia con toda la conversación anterior. "
         "Al final indicá que para generarlo automáticamente necesita configurar las APIs."
     )
-    desc_msgs = build_messages(video_system, req.history[:-1], 
+    hist = history[:-1] if history else []
+    desc_msgs = build_messages(video_system, hist, 
                                f"Video pedido: {prompt}\nPrompt mejorado para IA: {enhanced}")
     description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
     
@@ -712,7 +713,7 @@ async def orchestrate(req: OrchestrateReq):
 
         # ── VIDEO ────────────────────────────────────────────────────────────
         elif task == "video_gen":
-            video_url, result, label = await generate_video_smart(req.prompt)
+            video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, req.username)
 
         # ── IMÁGENES ──────────────────────────────────────────────────────────
         elif task == "image_gen":
