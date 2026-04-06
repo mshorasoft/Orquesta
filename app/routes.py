@@ -363,8 +363,13 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
                 )
                 rdata = r.json()
                 task_id = rdata.get("task_id", "")
+                base_resp = rdata.get("base_resp", {})
+                status_code_api = base_resp.get("status_code", 0)
                 
-                if r.status_code != 200 or not task_id:
+                # Detectar errores específicos de Minimax
+                if status_code_api == 1008:
+                    minimax_error = "Sin créditos (insufficient balance)"
+                elif r.status_code != 200 or not task_id:
                     minimax_error = f"HTTP {r.status_code}: {str(rdata)[:200]}"
                 else:
                     # Polling: esperar hasta 3 minutos (36 intentos x 5s)
@@ -398,14 +403,15 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
             minimax_error = str(e)
 
     # ── 2. KLING AI (Kuaishou) ────────────────────────────────────────────────
-    if KLING_AK and KLING_SK:
+    kling_error = ""
+    if KLING_AK and KLING_SK and pyjwt is not None:
         try:
             # Generar JWT para Kling
             now = int(_time.time())
             payload = {"iss": KLING_AK, "exp": now + 1800, "nbf": now - 5}
             token = pyjwt.encode(payload, KLING_SK, algorithm="HS256")
             
-            async with httpx.AsyncClient(timeout=30) as c:
+            async with httpx.AsyncClient(timeout=60) as c:
                 r = await c.post(
                     "https://api.klingai.com/v1/videos/text2video",
                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -418,11 +424,16 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
                         "duration": "5"
                     }
                 )
-                if r.status_code == 200:
-                    task_id = r.json().get("data", {}).get("task_id", "")
-                    if task_id:
-                        async with httpx.AsyncClient(timeout=15) as c2:
-                            for _ in range(24):
+                rdata = r.json()
+                if r.status_code != 200:
+                    kling_error = f"HTTP {r.status_code}: {str(rdata)[:200]}"
+                else:
+                    task_id = rdata.get("data", {}).get("task_id", "")
+                    if not task_id:
+                        kling_error = f"task_id vacío: {str(rdata)[:200]}"
+                    else:
+                        async with httpx.AsyncClient(timeout=30) as c2:
+                            for _ in range(30):
                                 await asyncio.sleep(5)
                                 sr = await c2.get(
                                     f"https://api.klingai.com/v1/videos/text2video/{task_id}",
@@ -435,10 +446,15 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
                                         video_url = works[0].get("url", "")
                                         if video_url:
                                             return video_url, "🎬 Video generado con **Kling AI** (5 segundos, HD).", "kling · v1"
+                                    kling_error = f"videos vacío: {sd}"
+                                    break
                                 elif sd.get("task_status") == "failed":
+                                    kling_error = f"Task falló: {sd}"
                                     break
         except Exception as e:
-            pass  # Siguiente opción
+            kling_error = str(e)
+    elif pyjwt is None:
+        kling_error = "PyJWT no instalado"
 
     # ── 3. REPLICATE (Wan2.1 - open source) ──────────────────────────────────
     if REPLICATE_KEY:
@@ -489,7 +505,12 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
     debug_info = ""
     try:
         errs = []
-        if minimax_error: errs.append(f"Minimax error: `{minimax_error[:150]}`")
+        try:
+            if minimax_error: errs.append(f"Minimax: `{minimax_error[:100]}`")
+        except: pass
+        try:
+            if kling_error: errs.append(f"Kling: `{kling_error[:100]}`")
+        except: pass
         if errs:
             debug_info = "\n\n> 🔧 **Debug:** " + " | ".join(errs)
     except:
@@ -765,29 +786,87 @@ async def debug_config():
 
 
 # ── TEST MINIMAX: probar conexión directa ─────────────────────────────────────
-@router.get("/test-minimax")
-async def test_minimax():
-    """Prueba la conexión con Minimax y muestra el resultado"""
-    key = os.getenv("MINIMAX_API_KEY", "")
-    if not key:
-        return {"error": "MINIMAX_API_KEY no configurada", "key_present": False}
+@router.get("/test-video-apis")
+async def test_video_apis():
+    """Prueba todas las APIs de video y muestra estado de cada una"""
+    import time as _t
+    results = {}
     
-    try:
-        async with httpx.AsyncClient(timeout=20) as c:
-            # Test simple: crear tarea con prompt corto
-            r = await c.post(
-                "https://api.minimaxi.chat/v1/video_generation",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"model": "video-01", "prompt": "A cat sitting on a chair"}
-            )
-            return {
-                "key_present": True,
-                "key_prefix": key[:8] + "...",
-                "http_status": r.status_code,
-                "response": r.json()
-            }
-    except Exception as e:
-        return {"key_present": True, "error": str(e)}
+    # Test Minimax
+    mm_key = os.getenv("MINIMAX_API_KEY", "")
+    if mm_key:
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.post(
+                    "https://api.minimaxi.chat/v1/video_generation",
+                    headers={"Authorization": f"Bearer {mm_key}", "Content-Type": "application/json"},
+                    json={"model": "video-01", "prompt": "test"}
+                )
+                rd = r.json()
+                sc = rd.get("base_resp", {}).get("status_code", 0)
+                results["minimax"] = {
+                    "key": mm_key[:8]+"...",
+                    "http": r.status_code,
+                    "api_code": sc,
+                    "msg": rd.get("base_resp", {}).get("status_msg", ""),
+                    "task_id": rd.get("task_id", ""),
+                    "ok": sc == 0
+                }
+        except Exception as e:
+            results["minimax"] = {"error": str(e)}
+    else:
+        results["minimax"] = {"error": "No configurada"}
+
+    # Test Kling
+    kling_ak = os.getenv("KLING_ACCESS_KEY", "")
+    kling_sk = os.getenv("KLING_SECRET_KEY", "")
+    if kling_ak and kling_sk:
+        try:
+            now = int(_t.time())
+            import jwt as _jwt
+            token = _jwt.encode({"iss": kling_ak, "exp": now+300, "nbf": now-5}, kling_sk, algorithm="HS256")
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.post(
+                    "https://api.klingai.com/v1/videos/text2video",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={"model_name": "kling-v1", "prompt": "test", "duration": "5"}
+                )
+                rd = r.json()
+                results["kling"] = {
+                    "key": kling_ak[:8]+"...",
+                    "http": r.status_code,
+                    "response": str(rd)[:300],
+                    "ok": r.status_code == 200
+                }
+        except Exception as e:
+            results["kling"] = {"error": str(e)}
+    else:
+        results["kling"] = {"error": "No configurada"}
+
+    # Test Replicate
+    rep_key = os.getenv("REPLICATE_API_KEY", "")
+    if rep_key:
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    "https://api.replicate.com/v1/models/wan-ai/wan2.1-t2v-480p",
+                    headers={"Authorization": f"Bearer {rep_key}"}
+                )
+                results["replicate"] = {
+                    "key": rep_key[:8]+"...",
+                    "http": r.status_code,
+                    "ok": r.status_code == 200
+                }
+        except Exception as e:
+            results["replicate"] = {"error": str(e)}
+    else:
+        results["replicate"] = {"error": "No configurada"}
+
+    return results
+
+@router.get("/test-minimax")
+async def test_minimax_legacy():
+    return {"redirect": "Use /api/test-video-apis instead"}
 
 
 # ── DOWNLOAD ──────────────────────────────────────────────────────────────────
@@ -902,4 +981,4 @@ async def speech_to_text(file: UploadFile = File(...)):
 @router.get("/status")
 async def status():
     return {"groq":bool(GROQ_KEY),"tavily":bool(TAVILY_KEY),"gemini":bool(GEMINI_KEY),
-            "openai":bool(OPENAI_KEY),"file_generation":True,"tts":bool(OPENAI_KEY)}
+            "openai":bool(OPENAI_KEY),"file_generatio
