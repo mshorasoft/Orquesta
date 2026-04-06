@@ -37,7 +37,9 @@ IDENTIDAD:
 REGLAS ABSOLUTAS:
 1. Respondé SIEMPRE en el mismo idioma del usuario
 2. NUNCA digas que "no podés" generar imágenes — SIEMPRE podés, usás DALL-E 3 o Pollinations AI
-3. NUNCA digas que "no podés" generar videos — SIEMPRE podés, usás Luma Dream Machine o Minimax Hailuo
+3. NUNCA digas que "no podés" generar videos — SIEMPRE podés, usás Minimax Hailuo o Kling AI
+4. SIEMPRE mantenés el hilo de la conversación — recordás todo lo que se habló antes en esta sesión
+5. Si el usuario pide "el archivo", "el mp4", "el video" → es continuación de lo anterior, no una pregunta nueva
 4. NUNCA des respuestas vagas — siempre datos concretos: números, fechas, nombres, fórmulas
 5. NUNCA termines con "¿En qué más puedo ayudarte?" ni frases similares
 6. Ante consultas técnicas: causa raíz + solución paso a paso con parámetros reales
@@ -72,6 +74,8 @@ VIDEO_GEN_KW = [
     "animación con","animate","generate video","create video","make a video",
     "video corto","clip de","short video","film","película corta",
     "video animado","animá","animar","renderizá un video","render video",
+    "quiero un video","necesito un video","haceme un video","generame un video",
+    "dame el video","el video de","video publicitario","video promocional",
 ]
 
 IMAGE_GEN_KW = [
@@ -144,15 +148,35 @@ def detect_file_type(prompt):
         if any(k in p for k in kws): return ftype
     return None
 
-def classify(prompt, mode):
+def classify(prompt, mode, history=None):
     if mode == "codigo":   return "code"
     if mode == "creativo": return "creative"
     if mode == "tecnico":  return "technical"
     p = prompt.lower()
+
+    # ── Detectar continuaciones de conversación con historial ──────────────
+    if history:
+        # Revisar los últimos 4 mensajes para detectar contexto
+        recent = [m.get("content","").lower() for m in history[-4:]]
+        recent_joined = " ".join(recent)
+        
+        # Continuación de video: "dame el mp4", "no funciona", "el video", etc.
+        video_followup = ["mp4","el video","el archivo","descargarlo","reproducir",
+                          "no funciona","no genera","no me da","el link","la url","ver el video"]
+        if any(k in p for k in video_followup):
+            if any(k in recent_joined for k in ["video","mp4","generar","generando","kling","minimax","luma"]):
+                return "video_gen"
+        
+        # Continuación de imagen
+        img_followup = ["la imagen","la foto","no carga","no se ve","otro estilo","más oscura","más grande"]
+        if any(k in p for k in img_followup):
+            if any(k in recent_joined for k in ["imagen","foto","dall-e","pollinations","generada"]):
+                return "image_gen"
+
     # File gen first
     ftype = detect_file_type(p)
     if ftype: return f"file_gen_{ftype}"
-    # Image gen — check BEFORE other keywords
+    # Video antes que imagen
     if any(k in p for k in VIDEO_GEN_KW): return "video_gen"
     if any(k in p for k in IMAGE_GEN_KW): return "image_gen"
     if any(k in p for k in SOUND_KW): return "sound_gen"
@@ -501,10 +525,16 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
             pass
 
     # ── FALLBACK: descripción + instrucciones ─────────────────────────────────
-    desc_msgs = [
-        {"role":"system","content":"El usuario pidió un video con IA pero no hay API de video activa. Describí el video de forma muy cinematográfica y detallada (iluminación, movimientos de cámara, colores, atmósfera). Luego explicá cómo activar la generación. En español, formato markdown."},
-        {"role":"user","content":f"Video pedido: {prompt}\nPrompt mejorado: {enhanced}"}
-    ]
+    # Sistema con historial completo para coherencia de conversación
+    video_system = (
+        get_system(req.mode, req.username) +
+        "\n\nIMPORTANTE: El usuario pidió un video con IA. "
+        "Describí el video de forma muy cinematográfica y detallada. "
+        "Mantené coherencia con toda la conversación anterior. "
+        "Al final indicá que para generarlo automáticamente necesita configurar las APIs."
+    )
+    desc_msgs = build_messages(video_system, req.history[:-1], 
+                               f"Video pedido: {prompt}\nPrompt mejorado para IA: {enhanced}")
     description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
     
     # Incluir info de debug si hubo error con las APIs
@@ -660,7 +690,7 @@ class OrchestrateResp(BaseModel):
 async def orchestrate(req: OrchestrateReq):
     if not req.prompt.strip(): raise HTTPException(400, "Prompt vacío")
     t0 = time.time()
-    task = classify(req.prompt, req.mode)
+    task = classify(req.prompt, req.mode, req.history)
     label = TASK_LABELS.get(task, "groq · llama 3.3")
     img_url = file_url = file_type = file_name = tts_url = result = video_url = ""
     system = get_system(req.mode, req.username)
