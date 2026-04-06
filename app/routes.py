@@ -349,40 +349,53 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
 
     # ── 1. MINIMAX HAILUO ─────────────────────────────────────────────────────
     if MINIMAX_KEY:
+        minimax_error = ""
         try:
-            async with httpx.AsyncClient(timeout=30) as c:
+            async with httpx.AsyncClient(timeout=60) as c:
+                # Crear tarea de generación de video
                 r = await c.post(
                     "https://api.minimaxi.chat/v1/video_generation",
-                    headers={"Authorization": f"Bearer {MINIMAX_KEY}", "Content-Type": "application/json"},
+                    headers={
+                        "Authorization": f"Bearer {MINIMAX_KEY}",
+                        "Content-Type": "application/json"
+                    },
                     json={"model": "video-01", "prompt": enhanced}
                 )
-                if r.status_code == 200:
-                    task_id = r.json().get("task_id", "")
-                    if task_id:
-                        # Polling hasta 2 minutos
-                        async with httpx.AsyncClient(timeout=15) as c2:
-                            for _ in range(24):
-                                await asyncio.sleep(5)
-                                sr = await c2.get(
-                                    f"https://api.minimaxi.chat/v1/query/video_generation?task_id={task_id}",
-                                    headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
-                                )
-                                sd = sr.json()
-                                if sd.get("status") == "Success":
-                                    fid = sd.get("file_id", "")
-                                    if fid:
-                                        # Obtener URL de descarga
-                                        fr = await c2.get(
-                                            f"https://api.minimaxi.chat/v1/files/retrieve?file_id={fid}",
-                                            headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
-                                        )
-                                        video_url = fr.json().get("file", {}).get("download_url", "")
-                                        if video_url:
-                                            return video_url, "🎬 Video generado con **Minimax Hailuo** (6 segundos, HD).", "minimax · hailuo"
-                                elif sd.get("status") in ("Fail", "Failed"):
-                                    break
+                rdata = r.json()
+                task_id = rdata.get("task_id", "")
+                
+                if r.status_code != 200 or not task_id:
+                    minimax_error = f"HTTP {r.status_code}: {str(rdata)[:200]}"
+                else:
+                    # Polling: esperar hasta 3 minutos (36 intentos x 5s)
+                    async with httpx.AsyncClient(timeout=30) as c2:
+                        for attempt in range(36):
+                            await asyncio.sleep(5)
+                            sr = await c2.get(
+                                f"https://api.minimaxi.chat/v1/query/video_generation?task_id={task_id}",
+                                headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
+                            )
+                            sd = sr.json()
+                            status = sd.get("status", "")
+                            
+                            if status == "Success":
+                                fid = sd.get("file_id", "")
+                                if fid:
+                                    fr = await c2.get(
+                                        f"https://api.minimaxi.chat/v1/files/retrieve?file_id={fid}",
+                                        headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
+                                    )
+                                    fdata = fr.json()
+                                    video_url = fdata.get("file", {}).get("download_url", "")
+                                    if video_url:
+                                        return video_url, "🎬 Video generado con **Minimax Hailuo**.", "minimax · hailuo"
+                                minimax_error = f"file_id vacío: {sd}"
+                                break
+                            elif status in ("Fail", "Failed", "Expired"):
+                                minimax_error = f"Task falló: {sd}"
+                                break
         except Exception as e:
-            pass  # Siguiente opción
+            minimax_error = str(e)
 
     # ── 2. KLING AI (Kuaishou) ────────────────────────────────────────────────
     if KLING_AK and KLING_SK:
@@ -472,14 +485,25 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
     ]
     description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
     
+    # Incluir info de debug si hubo error con las APIs
+    debug_info = ""
+    try:
+        errs = []
+        if minimax_error: errs.append(f"Minimax error: `{minimax_error[:150]}`")
+        if errs:
+            debug_info = "\n\n> 🔧 **Debug:** " + " | ".join(errs)
+    except:
+        pass
+
     fallback_msg = (
         f"{description}\n\n---\n"
-        f"**⚙️ Para generar este video automáticamente**, agregá en Railway alguna de estas variables:\n\n"
+        f"**⚙️ Variables ya configuradas en Railway** — revisá que sean correctas:\n\n"
         f"| Variable | Servicio | Plan gratuito |\n"
         f"|---|---|---|\n"
         f"| `MINIMAX_API_KEY` | [Minimax Hailuo](https://minimaxi.chat) | ✅ Créditos gratis |\n"
         f"| `KLING_ACCESS_KEY` + `KLING_SECRET_KEY` | [Kling AI](https://klingai.com) | ✅ 166 créditos/mes |\n"
         f"| `REPLICATE_API_KEY` | [Replicate](https://replicate.com) | ✅ Créditos iniciales |\n"
+        f"{debug_info}"
     )
     return "", fallback_msg, "orquesta · video-info"
 
@@ -738,6 +762,32 @@ async def debug_config():
         "tavily": bool(os.getenv("TAVILY_API_KEY","")),
         "status": "ok"
     }
+
+
+# ── TEST MINIMAX: probar conexión directa ─────────────────────────────────────
+@router.get("/test-minimax")
+async def test_minimax():
+    """Prueba la conexión con Minimax y muestra el resultado"""
+    key = os.getenv("MINIMAX_API_KEY", "")
+    if not key:
+        return {"error": "MINIMAX_API_KEY no configurada", "key_present": False}
+    
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            # Test simple: crear tarea con prompt corto
+            r = await c.post(
+                "https://api.minimaxi.chat/v1/video_generation",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": "video-01", "prompt": "A cat sitting on a chair"}
+            )
+            return {
+                "key_present": True,
+                "key_prefix": key[:8] + "...",
+                "http_status": r.status_code,
+                "response": r.json()
+            }
+    except Exception as e:
+        return {"key_present": True, "error": str(e)}
 
 
 # ── DOWNLOAD ──────────────────────────────────────────────────────────────────
