@@ -1,4 +1,8 @@
 import asyncio
+try:
+    import jwt as pyjwt
+except ImportError:
+    pyjwt = None
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
@@ -312,20 +316,28 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
 
 
 
-# ── GENERACIÓN DE VIDEO (Minimax / Luma / Kling vía APIs gratuitas) ──────────
+# ── GENERACIÓN DE VIDEO: Minimax → Kling → Replicate (todos free) ────────────
 async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
-    """Genera video usando Minimax Hailuo (gratis con API key) o Luma Dream Machine.
-    Fallback: devuelve URL de Pixabay stock video + descripción detallada."""
+    """
+    Cadena de generación de video 100% gratuita:
+    1. Minimax Hailuo (MINIMAX_API_KEY) - 6s, buena calidad
+    2. Kling AI       (KLING_API_KEY)   - 5-10s, 166 créditos/mes gratis
+    3. Replicate Wan  (REPLICATE_API_KEY) - open source, créditos iniciales
+    Fallback: descripción cinematográfica + instrucciones para activar
+    """
     import urllib.parse
+    import time as _time
 
-    MINIMAX_KEY = os.getenv("MINIMAX_API_KEY", "")
-    LUMA_KEY = os.getenv("LUMA_API_KEY", "")
+    MINIMAX_KEY  = os.getenv("MINIMAX_API_KEY", "")
+    KLING_AK     = os.getenv("KLING_ACCESS_KEY", "")
+    KLING_SK     = os.getenv("KLING_SECRET_KEY", "")
+    REPLICATE_KEY = os.getenv("REPLICATE_API_KEY", "")
 
-    # Mejorar el prompt con Groq
-    async def enhance_video_prompt(p):
+    # Mejorar prompt con Groq
+    async def enhance(p):
         try:
             msgs = [
-                {"role":"system","content":"You are a video generation prompt expert. Rewrite the user's request as a detailed video prompt for AI. Include: camera movement, lighting, style, duration (6-10s), mood. Reply ONLY with the enhanced prompt in English. Max 150 words."},
+                {"role":"system","content":"You are a video generation expert. Rewrite the user request as a detailed AI video prompt in English. Include: camera movement (pan, zoom, dolly), lighting style, mood, action, visual style (cinematic, 4K, photorealistic). Max 120 words. Reply ONLY with the enhanced prompt."},
                 {"role":"user","content":f"Video request: {p}"}
             ]
             enhanced, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
@@ -333,13 +345,12 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
         except:
             return p
 
-    enhanced = await enhance_video_prompt(prompt)
+    enhanced = await enhance(prompt)
 
-    # 1. Minimax Hailuo API (si está configurada)
+    # ── 1. MINIMAX HAILUO ─────────────────────────────────────────────────────
     if MINIMAX_KEY:
         try:
-            async with httpx.AsyncClient(timeout=120) as c:
-                # Crear tarea de video
+            async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post(
                     "https://api.minimaxi.chat/v1/video_generation",
                     headers={"Authorization": f"Bearer {MINIMAX_KEY}", "Content-Type": "application/json"},
@@ -348,60 +359,128 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
                 if r.status_code == 200:
                     task_id = r.json().get("task_id", "")
                     if task_id:
-                        # Esperar resultado (polling)
-                        for _ in range(20):
-                            await asyncio.sleep(5)
-                            status_r = await c.get(
-                                f"https://api.minimaxi.chat/v1/query/video_generation?task_id={task_id}",
-                                headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
-                            )
-                            status_data = status_r.json()
-                            if status_data.get("status") == "Success":
-                                video_url = status_data.get("file_id", "")
-                                if video_url:
-                                    return f"https://api.minimaxi.chat/v1/files/retrieve?file_id={video_url}", "🎬 Video generado con **Minimax Hailuo**.", "minimax · hailuo"
+                        # Polling hasta 2 minutos
+                        async with httpx.AsyncClient(timeout=15) as c2:
+                            for _ in range(24):
+                                await asyncio.sleep(5)
+                                sr = await c2.get(
+                                    f"https://api.minimaxi.chat/v1/query/video_generation?task_id={task_id}",
+                                    headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
+                                )
+                                sd = sr.json()
+                                if sd.get("status") == "Success":
+                                    fid = sd.get("file_id", "")
+                                    if fid:
+                                        # Obtener URL de descarga
+                                        fr = await c2.get(
+                                            f"https://api.minimaxi.chat/v1/files/retrieve?file_id={fid}",
+                                            headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
+                                        )
+                                        video_url = fr.json().get("file", {}).get("download_url", "")
+                                        if video_url:
+                                            return video_url, "🎬 Video generado con **Minimax Hailuo** (6 segundos, HD).", "minimax · hailuo"
+                                elif sd.get("status") in ("Fail", "Failed"):
+                                    break
         except Exception as e:
-            pass  # Intentar siguiente
+            pass  # Siguiente opción
 
-    # 2. Luma Dream Machine API (si está configurada)
-    if LUMA_KEY:
+    # ── 2. KLING AI (Kuaishou) ────────────────────────────────────────────────
+    if KLING_AK and KLING_SK:
         try:
-            async with httpx.AsyncClient(timeout=120) as c:
+            # Generar JWT para Kling
+            now = int(_time.time())
+            payload = {"iss": KLING_AK, "exp": now + 1800, "nbf": now - 5}
+            token = pyjwt.encode(payload, KLING_SK, algorithm="HS256")
+            
+            async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post(
-                    "https://api.lumalabs.ai/dream-machine/v1/generations",
-                    headers={"Authorization": f"Bearer {LUMA_KEY}", "Content-Type": "application/json"},
-                    json={"prompt": enhanced, "aspect_ratio": "16:9", "loop": False}
+                    "https://api.klingai.com/v1/videos/text2video",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={
+                        "model_name": "kling-v1",
+                        "prompt": enhanced,
+                        "negative_prompt": "blurry, low quality, distorted",
+                        "cfg_scale": 0.5,
+                        "mode": "std",
+                        "duration": "5"
+                    }
+                )
+                if r.status_code == 200:
+                    task_id = r.json().get("data", {}).get("task_id", "")
+                    if task_id:
+                        async with httpx.AsyncClient(timeout=15) as c2:
+                            for _ in range(24):
+                                await asyncio.sleep(5)
+                                sr = await c2.get(
+                                    f"https://api.klingai.com/v1/videos/text2video/{task_id}",
+                                    headers={"Authorization": f"Bearer {token}"}
+                                )
+                                sd = sr.json().get("data", {})
+                                if sd.get("task_status") == "succeed":
+                                    works = sd.get("task_result", {}).get("videos", [])
+                                    if works:
+                                        video_url = works[0].get("url", "")
+                                        if video_url:
+                                            return video_url, "🎬 Video generado con **Kling AI** (5 segundos, HD).", "kling · v1"
+                                elif sd.get("task_status") == "failed":
+                                    break
+        except Exception as e:
+            pass  # Siguiente opción
+
+    # ── 3. REPLICATE (Wan2.1 - open source) ──────────────────────────────────
+    if REPLICATE_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    "https://api.replicate.com/v1/predictions",
+                    headers={"Authorization": f"Bearer {REPLICATE_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "version": "wan-ai/wan2.1-t2v-480p",
+                        "input": {
+                            "prompt": enhanced,
+                            "negative_prompt": "blurry, low quality",
+                            "num_frames": 81,
+                            "guidance_scale": 5.0
+                        }
+                    }
                 )
                 if r.status_code == 201:
-                    gen_id = r.json().get("id", "")
-                    if gen_id:
-                        for _ in range(24):
-                            await asyncio.sleep(5)
-                            status_r = await c.get(
-                                f"https://api.lumalabs.ai/dream-machine/v1/generations/{gen_id}",
-                                headers={"Authorization": f"Bearer {LUMA_KEY}"}
-                            )
-                            status_data = status_r.json()
-                            if status_data.get("state") == "completed":
-                                video_url = status_data.get("assets", {}).get("video", "")
-                                if video_url:
-                                    return video_url, "🎬 Video generado con **Luma Dream Machine**.", "luma · dream-machine"
+                    pred_id = r.json().get("id", "")
+                    if pred_id:
+                        async with httpx.AsyncClient(timeout=15) as c2:
+                            for _ in range(30):
+                                await asyncio.sleep(5)
+                                sr = await c2.get(
+                                    f"https://api.replicate.com/v1/predictions/{pred_id}",
+                                    headers={"Authorization": f"Bearer {REPLICATE_KEY}"}
+                                )
+                                sd = sr.json()
+                                if sd.get("status") == "succeeded":
+                                    output = sd.get("output", "")
+                                    video_url = output if isinstance(output, str) else (output[0] if output else "")
+                                    if video_url:
+                                        return video_url, "🎬 Video generado con **Wan2.1** (open source, HD).", "replicate · wan2.1"
+                                elif sd.get("status") == "failed":
+                                    break
         except Exception as e:
             pass
 
-    # 3. Fallback: respuesta informativa con descripción del video
-    # (sin API key configurada, informar y dar opciones)
-    description_msgs = [
-        {"role":"system","content":"Sos un asistente creativo. El usuario pide un video con IA pero no hay API de video configurada. Describí el video de forma cinematográfica y detallada como si lo estuvieras viendo. Luego sugerí 3 servicios gratuitos donde puede generarlo. En español. Formato markdown."},
-        {"role":"user","content":f"Video pedido: {prompt}"}
+    # ── FALLBACK: descripción + instrucciones ─────────────────────────────────
+    desc_msgs = [
+        {"role":"system","content":"El usuario pidió un video con IA pero no hay API de video activa. Describí el video de forma muy cinematográfica y detallada (iluminación, movimientos de cámara, colores, atmósfera). Luego explicá cómo activar la generación. En español, formato markdown."},
+        {"role":"user","content":f"Video pedido: {prompt}\nPrompt mejorado: {enhanced}"}
     ]
-    description, _ = await groq_with_fallback(description_msgs, "llama-3.3-70b-versatile")
+    description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
     
-    fallback_msg = (f"{description}\n\n"
-                   f"---\n**Para generar este video automáticamente**, configurá en Railway:\n"
-                   f"- `MINIMAX_API_KEY` → [minimaxi.chat](https://minimaxi.chat) (plan gratuito disponible)\n"
-                   f"- `LUMA_API_KEY` → [lumalabs.ai](https://lumalabs.ai) (Dream Machine)")
-    
+    fallback_msg = (
+        f"{description}\n\n---\n"
+        f"**⚙️ Para generar este video automáticamente**, agregá en Railway alguna de estas variables:\n\n"
+        f"| Variable | Servicio | Plan gratuito |\n"
+        f"|---|---|---|\n"
+        f"| `MINIMAX_API_KEY` | [Minimax Hailuo](https://minimaxi.chat) | ✅ Créditos gratis |\n"
+        f"| `KLING_ACCESS_KEY` + `KLING_SECRET_KEY` | [Kling AI](https://klingai.com) | ✅ 166 créditos/mes |\n"
+        f"| `REPLICATE_API_KEY` | [Replicate](https://replicate.com) | ✅ Créditos iniciales |\n"
+    )
     return "", fallback_msg, "orquesta · video-info"
 
 
