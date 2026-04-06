@@ -1,8 +1,18 @@
 import asyncio
-try:
-    import jwt as pyjwt
-except ImportError:
-    pyjwt = None
+import hmac, hashlib
+
+# JWT manual para Kling (sin dependencia de PyJWT)
+def _make_kling_jwt(access_key: str, secret_key: str) -> str:
+    """Genera JWT HS256 manualmente sin librería externa"""
+    import base64, json, time
+    now = int(time.time())
+    header = base64.urlsafe_b64encode(json.dumps({"alg":"HS256","typ":"JWT"}).encode()).rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps({"iss":access_key,"exp":now+1800,"nbf":now-5}).encode()).rstrip(b"=").decode()
+    msg = f"{header}.{payload}".encode()
+    sig = base64.urlsafe_b64encode(hmac.new(secret_key.encode(), msg, hashlib.sha256).digest()).rstrip(b"=").decode()
+    return f"{header}.{payload}.{sig}"
+
+pyjwt = None  # No usado, mantenemos por compatibilidad
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
@@ -326,7 +336,6 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
     Fallback: descripción cinematográfica + instrucciones para activar
     """
     import urllib.parse
-    import time as _time
 
     MINIMAX_KEY  = os.getenv("MINIMAX_API_KEY", "")
     KLING_AK     = os.getenv("KLING_ACCESS_KEY", "")
@@ -406,10 +415,8 @@ async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
     kling_error = ""
     if KLING_AK and KLING_SK and pyjwt is not None:
         try:
-            # Generar JWT para Kling
-            now = int(_time.time())
-            payload = {"iss": KLING_AK, "exp": now + 1800, "nbf": now - 5}
-            token = pyjwt.encode(payload, KLING_SK, algorithm="HS256")
+            # Generar JWT para Kling (implementación manual, sin PyJWT)
+            token = _make_kling_jwt(KLING_AK, KLING_SK)
             
             async with httpx.AsyncClient(timeout=60) as c:
                 r = await c.post(
@@ -789,7 +796,6 @@ async def debug_config():
 @router.get("/test-video-apis")
 async def test_video_apis():
     """Prueba todas las APIs de video y muestra estado de cada una"""
-    import time as _t
     results = {}
     
     # Test Minimax
@@ -981,4 +987,4 @@ async def speech_to_text(file: UploadFile = File(...)):
 @router.get("/status")
 async def status():
     return {"groq":bool(GROQ_KEY),"tavily":bool(TAVILY_KEY),"gemini":bool(GEMINI_KEY),
-            "openai":bool(OPENAI_KEY),"file_generatio
+            "openai":bool(OPENAI_KEY),"file_generation":True,"tts":bool(OPENAI_KEY)}
