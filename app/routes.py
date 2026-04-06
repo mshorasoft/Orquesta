@@ -350,27 +350,35 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
 
 
 
-# ── GENERACIÓN DE VIDEO: Minimax → Kling → Replicate (todos free) ────────────
+# ── GENERACIÓN DE VIDEO: Fal.ai → Segmind → ModelsLab → Replicate → Minimax → Kling ──
 async def generate_video_smart(prompt: str, history=None, mode="general", username="") -> tuple[str, str, str]:
     """
-    Cadena de generación de video 100% gratuita:
-    1. Minimax Hailuo (MINIMAX_API_KEY) - 6s, buena calidad
-    2. Kling AI       (KLING_API_KEY)   - 5-10s, 166 créditos/mes gratis
-    3. Replicate Wan  (REPLICATE_API_KEY) - open source, créditos iniciales
-    Fallback: descripción cinematográfica + instrucciones para activar
+    Cadena de generación de video priorizando opciones gratuitas:
+    1. Fal.ai          (FAL_API_KEY)      — $10 gratis sin tarjeta, ~300 videos
+    2. Segmind         (SEGMIND_API_KEY)  — 100 créditos/mes gratis renovables
+    3. ModelsLab       (MODELSLAB_API_KEY)— 100 créditos gratis
+    4. Replicate       (REPLICATE_API_KEY)— crédito inicial, muy barato
+    5. Minimax Hailuo  (MINIMAX_API_KEY)  — si tiene créditos
+    6. Kling AI        (KLING_ACCESS_KEY + KLING_SECRET_KEY) — si tiene créditos
+    7. Fallback        — descripción cinematográfica + instrucciones
     """
     import urllib.parse
 
+    FAL_KEY      = os.getenv("FAL_API_KEY", "")
+    SEGMIND_KEY  = os.getenv("SEGMIND_API_KEY", "")
+    MODELSLAB_KEY = os.getenv("MODELSLAB_API_KEY", "")
+    REPLICATE_KEY = os.getenv("REPLICATE_API_KEY", "")
     MINIMAX_KEY  = os.getenv("MINIMAX_API_KEY", "")
     KLING_AK     = os.getenv("KLING_ACCESS_KEY", "")
     KLING_SK     = os.getenv("KLING_SECRET_KEY", "")
-    REPLICATE_KEY = os.getenv("REPLICATE_API_KEY", "")
+
+    errors = {}
 
     # Mejorar prompt con Groq
     async def enhance(p):
         try:
             msgs = [
-                {"role":"system","content":"You are a video generation expert. Rewrite the user request as a detailed AI video prompt in English. Include: camera movement (pan, zoom, dolly), lighting style, mood, action, visual style (cinematic, 4K, photorealistic). Max 120 words. Reply ONLY with the enhanced prompt."},
+                {"role":"system","content":"You are a video generation expert. Rewrite the user request as a detailed AI video prompt in English. Include: camera movement, lighting style, mood, action, visual style (cinematic, 4K, photorealistic). Max 120 words. Reply ONLY with the enhanced prompt."},
                 {"role":"user","content":f"Video request: {p}"}
             ]
             enhanced, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
@@ -380,89 +388,217 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
 
     enhanced = await enhance(prompt)
 
-    # ── 1. MINIMAX HAILUO ─────────────────────────────────────────────────────
-    if MINIMAX_KEY:
-        minimax_error = ""
+    # ── 1. FAL.AI (gratis $10 sin tarjeta) ───────────────────────────────────
+    if FAL_KEY:
         try:
             async with httpx.AsyncClient(timeout=60) as c:
-                # Crear tarea de generación de video
+                # Enviar tarea
+                r = await c.post(
+                    "https://queue.fal.run/fal-ai/fast-animatediff/text-to-video",
+                    headers={"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"},
+                    json={"prompt": enhanced, "num_frames": 16, "num_inference_steps": 25}
+                )
+                rd = r.json()
+                if r.status_code in (200, 201):
+                    request_id = rd.get("request_id", "")
+                    if request_id:
+                        # Polling resultado
+                        async with httpx.AsyncClient(timeout=20) as c2:
+                            for _ in range(24):
+                                await asyncio.sleep(5)
+                                sr = await c2.get(
+                                    f"https://queue.fal.run/fal-ai/fast-animatediff/text-to-video/requests/{request_id}",
+                                    headers={"Authorization": f"Key {FAL_KEY}"}
+                                )
+                                sd = sr.json()
+                                if sd.get("status") == "COMPLETED":
+                                    video_url = sd.get("response", {}).get("video", {}).get("url", "")
+                                    if not video_url:
+                                        # Intentar otra estructura de respuesta
+                                        outputs = sd.get("response", {})
+                                        if isinstance(outputs, dict):
+                                            for v in outputs.values():
+                                                if isinstance(v, str) and v.startswith("http"):
+                                                    video_url = v
+                                                    break
+                                    if video_url:
+                                        return video_url, "🎬 Video generado con **Fal.ai** (AnimateDiff).", "fal · animatediff"
+                                elif sd.get("status") == "FAILED":
+                                    errors["fal"] = str(sd.get("error", "Failed"))
+                                    break
+                    else:
+                        errors["fal"] = f"HTTP {r.status_code}: {str(rd)[:150]}"
+                else:
+                    errors["fal"] = f"HTTP {r.status_code}: {str(rd)[:150]}"
+        except Exception as e:
+            errors["fal"] = str(e)[:100]
+
+    # ── 2. SEGMIND (100 créditos/mes gratis) ─────────────────────────────────
+    if SEGMIND_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=120) as c:
+                r = await c.post(
+                    "https://api.segmind.com/v1/fast-svd-xt-3frames",
+                    headers={"x-api-key": SEGMIND_KEY, "Content-Type": "application/json"},
+                    json={
+                        "prompt": enhanced,
+                        "negative_prompt": "blurry, low quality",
+                        "num_frames": 14,
+                        "num_inference_steps": 20,
+                        "guidance_scale": 7.5,
+                        "fps": 8,
+                        "motion_bucket_id": 127,
+                        "base64": False
+                    }
+                )
+                if r.status_code == 200 and r.headers.get("content-type","").startswith("video"):
+                    # Respuesta directa como video binario
+                    import uuid as _uuid
+                    token = str(_uuid.uuid4())
+                    _file_cache[token] = (r.content, "video.mp4", "video/mp4")
+                    return f"/api/download/{token}", "🎬 Video generado con **Segmind** (SVD).", "segmind · svd"
+                else:
+                    rd = r.json() if r.headers.get("content-type","").startswith("application") else {}
+                    errors["segmind"] = f"HTTP {r.status_code}: {str(rd)[:150]}"
+        except Exception as e:
+            errors["segmind"] = str(e)[:100]
+
+    # ── 3. MODELSLAB (100 créditos gratis) ───────────────────────────────────
+    if MODELSLAB_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    "https://modelslab.com/api/v6/video/text2video",
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "key": MODELSLAB_KEY,
+                        "prompt": enhanced,
+                        "negative_prompt": "blurry, low quality",
+                        "height": 512,
+                        "width": 512,
+                        "num_frames": 16,
+                        "num_inference_steps": 20,
+                        "guidance_scale": 7.5,
+                        "output_type": "mp4"
+                    }
+                )
+                rd = r.json()
+                if r.status_code == 200:
+                    status = rd.get("status", "")
+                    if status == "success":
+                        video_url = rd.get("output", [""])[0] if rd.get("output") else ""
+                        if video_url:
+                            return video_url, "🎬 Video generado con **ModelsLab**.", "modelslab · t2v"
+                    elif status == "processing":
+                        fetch_url = rd.get("fetch_result", "")
+                        if fetch_url:
+                            async with httpx.AsyncClient(timeout=20) as c2:
+                                for _ in range(20):
+                                    await asyncio.sleep(6)
+                                    sr = await c2.post(fetch_url, headers={"Content-Type":"application/json"},
+                                                       json={"key": MODELSLAB_KEY})
+                                    sd = sr.json()
+                                    if sd.get("status") == "success":
+                                        video_url = sd.get("output", [""])[0] if sd.get("output") else ""
+                                        if video_url:
+                                            return video_url, "🎬 Video generado con **ModelsLab**.", "modelslab · t2v"
+                                        break
+                    errors["modelslab"] = f"status={status}: {str(rd)[:150]}"
+                else:
+                    errors["modelslab"] = f"HTTP {r.status_code}: {str(rd)[:150]}"
+        except Exception as e:
+            errors["modelslab"] = str(e)[:100]
+
+    # ── 4. REPLICATE ──────────────────────────────────────────────────────────
+    if REPLICATE_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    "https://api.replicate.com/v1/models/lucataco/animate-diff/predictions",
+                    headers={"Authorization": f"Bearer {REPLICATE_KEY}", "Content-Type": "application/json"},
+                    json={"input": {"prompt": enhanced, "num_frames": 16, "num_inference_steps": 25}}
+                )
+                if r.status_code == 201:
+                    pred_id = r.json().get("id", "")
+                    if pred_id:
+                        async with httpx.AsyncClient(timeout=20) as c2:
+                            for _ in range(30):
+                                await asyncio.sleep(5)
+                                sr = await c2.get(
+                                    f"https://api.replicate.com/v1/predictions/{pred_id}",
+                                    headers={"Authorization": f"Bearer {REPLICATE_KEY}"}
+                                )
+                                sd = sr.json()
+                                if sd.get("status") == "succeeded":
+                                    output = sd.get("output", "")
+                                    video_url = output if isinstance(output, str) else (output[0] if output else "")
+                                    if video_url:
+                                        return video_url, "🎬 Video generado con **Replicate** (AnimateDiff).", "replicate · animate-diff"
+                                elif sd.get("status") == "failed":
+                                    errors["replicate"] = str(sd.get("error",""))[:100]
+                                    break
+                else:
+                    errors["replicate"] = f"HTTP {r.status_code}: {str(r.json())[:150]}"
+        except Exception as e:
+            errors["replicate"] = str(e)[:100]
+
+    # ── 5. MINIMAX (si tiene créditos) ────────────────────────────────────────
+    if MINIMAX_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=60) as c:
                 r = await c.post(
                     "https://api.minimaxi.chat/v1/video_generation",
-                    headers={
-                        "Authorization": f"Bearer {MINIMAX_KEY}",
-                        "Content-Type": "application/json"
-                    },
+                    headers={"Authorization": f"Bearer {MINIMAX_KEY}", "Content-Type": "application/json"},
                     json={"model": "video-01", "prompt": enhanced}
                 )
                 rdata = r.json()
                 task_id = rdata.get("task_id", "")
                 base_resp = rdata.get("base_resp", {})
-                status_code_api = base_resp.get("status_code", 0)
-                
-                # Detectar errores específicos de Minimax
-                if status_code_api == 1008:
-                    minimax_error = "Sin créditos (insufficient balance)"
-                elif r.status_code != 200 or not task_id:
-                    minimax_error = f"HTTP {r.status_code}: {str(rdata)[:200]}"
-                else:
-                    # Polling: esperar hasta 3 minutos (36 intentos x 5s)
+                if base_resp.get("status_code") == 1008:
+                    errors["minimax"] = "Sin créditos (insufficient balance)"
+                elif r.status_code == 200 and task_id:
                     async with httpx.AsyncClient(timeout=30) as c2:
-                        for attempt in range(36):
+                        for _ in range(36):
                             await asyncio.sleep(5)
                             sr = await c2.get(
                                 f"https://api.minimaxi.chat/v1/query/video_generation?task_id={task_id}",
                                 headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
                             )
                             sd = sr.json()
-                            status = sd.get("status", "")
-                            
-                            if status == "Success":
+                            if sd.get("status") == "Success":
                                 fid = sd.get("file_id", "")
                                 if fid:
                                     fr = await c2.get(
                                         f"https://api.minimaxi.chat/v1/files/retrieve?file_id={fid}",
                                         headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
                                     )
-                                    fdata = fr.json()
-                                    video_url = fdata.get("file", {}).get("download_url", "")
+                                    video_url = fr.json().get("file", {}).get("download_url", "")
                                     if video_url:
                                         return video_url, "🎬 Video generado con **Minimax Hailuo**.", "minimax · hailuo"
-                                minimax_error = f"file_id vacío: {sd}"
+                            elif sd.get("status") in ("Fail","Failed","Expired"):
+                                errors["minimax"] = f"Task falló: {sd}"
                                 break
-                            elif status in ("Fail", "Failed", "Expired"):
-                                minimax_error = f"Task falló: {sd}"
-                                break
+                else:
+                    errors["minimax"] = f"HTTP {r.status_code}: {str(rdata)[:150]}"
         except Exception as e:
-            minimax_error = str(e)
+            errors["minimax"] = str(e)[:100]
 
-    # ── 2. KLING AI (Kuaishou) ────────────────────────────────────────────────
-    kling_error = ""
+    # ── 6. KLING (si tiene créditos) ──────────────────────────────────────────
     if KLING_AK and KLING_SK:
         try:
-            # Generar JWT para Kling (implementación manual, sin PyJWT)
             token = _make_kling_jwt(KLING_AK, KLING_SK)
-            
             async with httpx.AsyncClient(timeout=60) as c:
                 r = await c.post(
                     "https://api.klingai.com/v1/videos/text2video",
                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    json={
-                        "model_name": "kling-v1",
-                        "prompt": enhanced,
-                        "negative_prompt": "blurry, low quality, distorted",
-                        "cfg_scale": 0.5,
-                        "mode": "std",
-                        "duration": "5"
-                    }
+                    json={"model_name": "kling-v1", "prompt": enhanced, "negative_prompt": "blurry, low quality", "cfg_scale": 0.5, "mode": "std", "duration": "5"}
                 )
                 rdata = r.json()
                 if r.status_code != 200:
-                    kling_error = f"HTTP {r.status_code}: {str(rdata)[:200]}"
+                    errors["kling"] = f"HTTP {r.status_code}: {str(rdata)[:150]}"
                 else:
                     task_id = rdata.get("data", {}).get("task_id", "")
-                    if not task_id:
-                        kling_error = f"task_id vacío: {str(rdata)[:200]}"
-                    else:
+                    if task_id:
                         async with httpx.AsyncClient(timeout=30) as c2:
                             for _ in range(30):
                                 await asyncio.sleep(5)
@@ -476,90 +612,43 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                                     if works:
                                         video_url = works[0].get("url", "")
                                         if video_url:
-                                            return video_url, "🎬 Video generado con **Kling AI** (5 segundos, HD).", "kling · v1"
-                                    kling_error = f"videos vacío: {sd}"
-                                    break
+                                            return video_url, "🎬 Video generado con **Kling AI**.", "kling · v1"
                                 elif sd.get("task_status") == "failed":
-                                    kling_error = f"Task falló: {sd}"
+                                    errors["kling"] = f"Task falló: {sd}"
                                     break
+                    else:
+                        errors["kling"] = f"task_id vacío: {str(rdata)[:150]}"
         except Exception as e:
-            kling_error = str(e)
+            errors["kling"] = str(e)[:100]
 
-
-    # ── 3. REPLICATE (Wan2.1 - open source) ──────────────────────────────────
-    if REPLICATE_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(
-                    "https://api.replicate.com/v1/predictions",
-                    headers={"Authorization": f"Bearer {REPLICATE_KEY}", "Content-Type": "application/json"},
-                    json={
-                        "version": "luma/ray-flash-2-540p",
-                        "input": {
-                            "prompt": enhanced,
-                            "duration": "5s",
-                            "aspect_ratio": "16:9"
-                        }
-                    }
-                )
-                if r.status_code == 201:
-                    pred_id = r.json().get("id", "")
-                    if pred_id:
-                        async with httpx.AsyncClient(timeout=15) as c2:
-                            for _ in range(30):
-                                await asyncio.sleep(5)
-                                sr = await c2.get(
-                                    f"https://api.replicate.com/v1/predictions/{pred_id}",
-                                    headers={"Authorization": f"Bearer {REPLICATE_KEY}"}
-                                )
-                                sd = sr.json()
-                                if sd.get("status") == "succeeded":
-                                    output = sd.get("output", "")
-                                    video_url = output if isinstance(output, str) else (output[0] if output else "")
-                                    if video_url:
-                                        return video_url, "🎬 Video generado con **Wan2.1** (open source, HD).", "replicate · wan2.1"
-                                elif sd.get("status") == "failed":
-                                    break
-        except Exception as e:
-            pass
-
-    # ── FALLBACK: descripción + instrucciones ─────────────────────────────────
-    # Sistema con historial completo para coherencia de conversación
+    # ── 7. FALLBACK ───────────────────────────────────────────────────────────
     video_system = (
         get_system(mode, username) +
         "\n\nIMPORTANTE: El usuario pidió un video con IA. "
         "Describí el video de forma muy cinematográfica y detallada. "
         "Mantené coherencia con toda la conversación anterior. "
-        "Al final indicá que para generarlo automáticamente necesita configurar las APIs."
+        "Al final indicá brevemente que para generarlo automáticamente debe configurar una API de video."
     )
     hist = history[:-1] if history else []
-    desc_msgs = build_messages(video_system, hist, 
-                               f"Video pedido: {prompt}\nPrompt mejorado para IA: {enhanced}")
+    desc_msgs = build_messages(video_system, hist,
+                               f"Video pedido: {prompt}\nPrompt mejorado: {enhanced}")
     description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
-    
-    # Incluir info de debug si hubo error con las APIs
+
+    # Debug info
     debug_info = ""
-    try:
-        errs = []
-        try:
-            if minimax_error: errs.append(f"Minimax: `{minimax_error[:100]}`")
-        except: pass
-        try:
-            if kling_error: errs.append(f"Kling: `{kling_error[:100]}`")
-        except: pass
-        if errs:
-            debug_info = "\n\n> 🔧 **Debug:** " + " | ".join(errs)
-    except:
-        pass
+    if errors:
+        errs_str = " | ".join([f"{k}: `{v[:80]}`" for k,v in errors.items()])
+        debug_info = f"\n\n> 🔧 **Debug:** {errs_str}"
 
     fallback_msg = (
         f"{description}\n\n---\n"
-        f"**⚙️ Variables ya configuradas en Railway** — revisá que sean correctas:\n\n"
-        f"| Variable | Servicio | Plan gratuito |\n"
+        f"**⚙️ Para generar este video automáticamente**, registrate gratis y agregá en Railway:\n\n"
+        f"| Variable | Servicio | Gratis |\n"
         f"|---|---|---|\n"
-        f"| `MINIMAX_API_KEY` | [Minimax Hailuo](https://minimaxi.chat) | ✅ Créditos gratis |\n"
-        f"| `KLING_ACCESS_KEY` + `KLING_SECRET_KEY` | [Kling AI](https://klingai.com) | ✅ 166 créditos/mes |\n"
-        f"| `REPLICATE_API_KEY` | [Replicate](https://replicate.com) | ✅ Créditos iniciales |\n"
+        f"| `FAL_API_KEY` | [Fal.ai](https://fal.ai) | ✅ $10 sin tarjeta (~300 videos) |\n"
+        f"| `SEGMIND_API_KEY` | [Segmind](https://segmind.com) | ✅ 100 créditos/mes renovables |\n"
+        f"| `MODELSLAB_API_KEY` | [ModelsLab](https://modelslab.com) | ✅ 100 créditos gratis |\n"
+        f"| `REPLICATE_API_KEY` | [Replicate](https://replicate.com) | ✅ Ya configurada |\n"
         f"{debug_info}"
     )
     return "", fallback_msg, "orquesta · video-info"
