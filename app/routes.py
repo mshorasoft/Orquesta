@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
@@ -49,6 +50,14 @@ def get_system(mode, username=""):
     return sys
 
 # ── CLASIFICADORES ────────────────────────────────────────────────────────────
+VIDEO_GEN_KW = [
+    "genera un video","generá un video","crea un video","creá un video",
+    "hace un video","hacé un video","video de","video con","animación de",
+    "animación con","animate","generate video","create video","make a video",
+    "video corto","clip de","short video","film","película corta",
+    "video animado","animá","animar","renderizá un video","render video",
+]
+
 IMAGE_GEN_KW = [
     "genera una imagen","generá una imagen","crea una imagen","creá una imagen",
     "dibuja","dibujá","ilustra","ilustrá","imagen de","foto de","fotografía de",
@@ -128,6 +137,7 @@ def classify(prompt, mode):
     ftype = detect_file_type(p)
     if ftype: return f"file_gen_{ftype}"
     # Image gen — check BEFORE other keywords
+    if any(k in p for k in VIDEO_GEN_KW): return "video_gen"
     if any(k in p for k in IMAGE_GEN_KW): return "image_gen"
     if any(k in p for k in SOUND_KW): return "sound_gen"
     if any(k in p for k in TRANSLATE_KW): return "translate"
@@ -287,7 +297,7 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
         enhanced = await enhance(prompt)
         seed = int(time.time()) % 99999
         encoded = urllib.parse.quote(enhanced)
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true&seed={seed}&model=flux"
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true&seed={seed}&model=flux&nofeed=true"
         return url, "🎨 Imagen generada con **Pollinations AI** (modelo Flux).", "pollinations · flux"
     except:
         pass
@@ -295,8 +305,102 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
     # 3. Fallback básico
     seed = int(time.time()) % 99999
     encoded = urllib.parse.quote(prompt[:400])
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={seed}"
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={seed}&nofeed=true"
     return url, "🎨 Imagen generada.", "pollinations · imagen"
+
+
+
+# ── GENERACIÓN DE VIDEO (Minimax / Luma / Kling vía APIs gratuitas) ──────────
+async def generate_video_smart(prompt: str) -> tuple[str, str, str]:
+    """Genera video usando Minimax Hailuo (gratis con API key) o Luma Dream Machine.
+    Fallback: devuelve URL de Pixabay stock video + descripción detallada."""
+    import urllib.parse
+
+    MINIMAX_KEY = os.getenv("MINIMAX_API_KEY", "")
+    LUMA_KEY = os.getenv("LUMA_API_KEY", "")
+
+    # Mejorar el prompt con Groq
+    async def enhance_video_prompt(p):
+        try:
+            msgs = [
+                {"role":"system","content":"You are a video generation prompt expert. Rewrite the user's request as a detailed video prompt for AI. Include: camera movement, lighting, style, duration (6-10s), mood. Reply ONLY with the enhanced prompt in English. Max 150 words."},
+                {"role":"user","content":f"Video request: {p}"}
+            ]
+            enhanced, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+            return enhanced.strip()[:300]
+        except:
+            return p
+
+    enhanced = await enhance_video_prompt(prompt)
+
+    # 1. Minimax Hailuo API (si está configurada)
+    if MINIMAX_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=120) as c:
+                # Crear tarea de video
+                r = await c.post(
+                    "https://api.minimaxi.chat/v1/video_generation",
+                    headers={"Authorization": f"Bearer {MINIMAX_KEY}", "Content-Type": "application/json"},
+                    json={"model": "video-01", "prompt": enhanced}
+                )
+                if r.status_code == 200:
+                    task_id = r.json().get("task_id", "")
+                    if task_id:
+                        # Esperar resultado (polling)
+                        for _ in range(20):
+                            await asyncio.sleep(5)
+                            status_r = await c.get(
+                                f"https://api.minimaxi.chat/v1/query/video_generation?task_id={task_id}",
+                                headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
+                            )
+                            status_data = status_r.json()
+                            if status_data.get("status") == "Success":
+                                video_url = status_data.get("file_id", "")
+                                if video_url:
+                                    return f"https://api.minimaxi.chat/v1/files/retrieve?file_id={video_url}", "🎬 Video generado con **Minimax Hailuo**.", "minimax · hailuo"
+        except Exception as e:
+            pass  # Intentar siguiente
+
+    # 2. Luma Dream Machine API (si está configurada)
+    if LUMA_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=120) as c:
+                r = await c.post(
+                    "https://api.lumalabs.ai/dream-machine/v1/generations",
+                    headers={"Authorization": f"Bearer {LUMA_KEY}", "Content-Type": "application/json"},
+                    json={"prompt": enhanced, "aspect_ratio": "16:9", "loop": False}
+                )
+                if r.status_code == 201:
+                    gen_id = r.json().get("id", "")
+                    if gen_id:
+                        for _ in range(24):
+                            await asyncio.sleep(5)
+                            status_r = await c.get(
+                                f"https://api.lumalabs.ai/dream-machine/v1/generations/{gen_id}",
+                                headers={"Authorization": f"Bearer {LUMA_KEY}"}
+                            )
+                            status_data = status_r.json()
+                            if status_data.get("state") == "completed":
+                                video_url = status_data.get("assets", {}).get("video", "")
+                                if video_url:
+                                    return video_url, "🎬 Video generado con **Luma Dream Machine**.", "luma · dream-machine"
+        except Exception as e:
+            pass
+
+    # 3. Fallback: respuesta informativa con descripción del video
+    # (sin API key configurada, informar y dar opciones)
+    description_msgs = [
+        {"role":"system","content":"Sos un asistente creativo. El usuario pide un video con IA pero no hay API de video configurada. Describí el video de forma cinematográfica y detallada como si lo estuvieras viendo. Luego sugerí 3 servicios gratuitos donde puede generarlo. En español. Formato markdown."},
+        {"role":"user","content":f"Video pedido: {prompt}"}
+    ]
+    description, _ = await groq_with_fallback(description_msgs, "llama-3.3-70b-versatile")
+    
+    fallback_msg = (f"{description}\n\n"
+                   f"---\n**Para generar este video automáticamente**, configurá en Railway:\n"
+                   f"- `MINIMAX_API_KEY` → [minimaxi.chat](https://minimaxi.chat) (plan gratuito disponible)\n"
+                   f"- `LUMA_API_KEY` → [lumalabs.ai](https://lumalabs.ai) (Dream Machine)")
+    
+    return "", fallback_msg, "orquesta · video-info"
 
 
 # ── DEEP MULTI-SOURCE SEARCH ──────────────────────────────────────────────────
@@ -416,6 +520,7 @@ class OrchestrateResp(BaseModel):
     file_type: str = ""
     file_name: str = ""
     tts_url: str = ""           # URL del audio si tts_enabled=True
+    video_url: str = ""         # URL del video generado
 
 
 # ── MAIN ENDPOINT ─────────────────────────────────────────────────────────────
@@ -425,7 +530,7 @@ async def orchestrate(req: OrchestrateReq):
     t0 = time.time()
     task = classify(req.prompt, req.mode)
     label = TASK_LABELS.get(task, "groq · llama 3.3")
-    img_url = file_url = file_type = file_name = tts_url = result = ""
+    img_url = file_url = file_type = file_name = tts_url = result = video_url = ""
     system = get_system(req.mode, req.username)
 
     try:
@@ -442,6 +547,10 @@ async def orchestrate(req: OrchestrateReq):
                 label = f"orquesta · {names.get(ftype,ftype).lower()}"
             except Exception as e:
                 result = f"Error generando el archivo: {str(e)[:200]}. Reformulá tu pedido."
+
+        # ── VIDEO ────────────────────────────────────────────────────────────
+        elif task == "video_gen":
+            video_url, result, label = await generate_video_smart(req.prompt)
 
         # ── IMÁGENES ──────────────────────────────────────────────────────────
         elif task == "image_gen":
@@ -532,8 +641,22 @@ async def orchestrate(req: OrchestrateReq):
         result=result, task_type=task, model_label=label,
         latency_ms=int((time.time()-t0)*1000),
         image_url=img_url, file_url=file_url, file_type=file_type,
-        file_name=file_name, tts_url=tts_url,
+        file_name=file_name, tts_url=tts_url, video_url=video_url,
     )
+
+
+
+# ── DEBUG: ver qué keys están configuradas ────────────────────────────────────
+@router.get("/debug-config")
+async def debug_config():
+    """Endpoint de diagnóstico - ver qué APIs están configuradas"""
+    return {
+        "groq": bool(os.getenv("GROQ_API_KEY","")),
+        "openai": bool(os.getenv("OPENAI_API_KEY","")),
+        "gemini": bool(os.getenv("GEMINI_API_KEY","")),
+        "tavily": bool(os.getenv("TAVILY_API_KEY","")),
+        "status": "ok"
+    }
 
 
 # ── DOWNLOAD ──────────────────────────────────────────────────────────────────
@@ -648,4 +771,4 @@ async def speech_to_text(file: UploadFile = File(...)):
 @router.get("/status")
 async def status():
     return {"groq":bool(GROQ_KEY),"tavily":bool(TAVILY_KEY),"gemini":bool(GEMINI_KEY),
-            "openai":bool(OPENAI_KEY),"file_generation":True,"tts":bool(OPENAI_KEY)}
+            "openai":bool(OPENAI_KEY),"file_gene
