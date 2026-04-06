@@ -364,6 +364,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
     """
     import urllib.parse
 
+    HF_KEY       = os.getenv("HUGGINGFACE_API_KEY", "")
     FAL_KEY      = os.getenv("FAL_API_KEY", "")
     SEGMIND_KEY  = os.getenv("SEGMIND_API_KEY", "")
     MODELSLAB_KEY = os.getenv("MODELSLAB_API_KEY", "")
@@ -387,6 +388,47 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
             return p
 
     enhanced = await enhance(prompt)
+
+    # ── 0. HUGGING FACE (gratis permanente, sin tarjeta) ────────────────────
+    if HF_KEY:
+        # Intentar ZeroScope primero (mejor calidad), luego damo-vilab
+        for hf_model in [
+            "cerspense/zeroscope_v2_576w",
+            "damo-vilab/text-to-video-ms-1.7b"
+        ]:
+            try:
+                async with httpx.AsyncClient(timeout=120) as c:
+                    r = await c.post(
+                        f"https://api-inference.huggingface.co/models/{hf_model}",
+                        headers={"Authorization": f"Bearer {HF_KEY}"},
+                        json={"inputs": enhanced[:200]}
+                    )
+                    if r.status_code == 200:
+                        content_type = r.headers.get("content-type", "")
+                        if "video" in content_type or "octet-stream" in content_type or len(r.content) > 10000:
+                            import uuid as _uuid
+                            token = str(_uuid.uuid4())
+                            _file_cache[token] = (r.content, "video.mp4", "video/mp4")
+                            model_short = hf_model.split("/")[-1][:20]
+                            return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({model_short}).", "huggingface · free"
+                    elif r.status_code == 503:
+                        # Modelo cargando, esperar
+                        await asyncio.sleep(20)
+                        r2 = await c.post(
+                            f"https://api-inference.huggingface.co/models/{hf_model}",
+                            headers={"Authorization": f"Bearer {HF_KEY}"},
+                            json={"inputs": enhanced[:200]}
+                        )
+                        if r2.status_code == 200 and len(r2.content) > 10000:
+                            import uuid as _uuid
+                            token = str(_uuid.uuid4())
+                            _file_cache[token] = (r2.content, "video.mp4", "video/mp4")
+                            model_short = hf_model.split("/")[-1][:20]
+                            return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({model_short}).", "huggingface · free"
+                    else:
+                        errors[f"hf_{hf_model.split('/')[-1][:10]}"] = f"HTTP {r.status_code}: {r.text[:100]}"
+            except Exception as e:
+                errors[f"hf_{hf_model.split('/')[-1][:10]}"] = str(e)[:80]
 
     # ── 1. FAL.AI (gratis $10 sin tarjeta) ───────────────────────────────────
     if FAL_KEY:
@@ -514,9 +556,12 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         try:
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post(
-                    "https://api.replicate.com/v1/models/lucataco/animate-diff/predictions",
+                    "https://api.replicate.com/v1/predictions",
                     headers={"Authorization": f"Bearer {REPLICATE_KEY}", "Content-Type": "application/json"},
-                    json={"input": {"prompt": enhanced, "num_frames": 16, "num_inference_steps": 25}}
+                    json={
+                        "version": "beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa817cabdfa",
+                        "input": {"prompt": enhanced, "num_frames": 16, "num_inference_steps": 25, "fps": 8}
+                    }
                 )
                 if r.status_code == 201:
                     pred_id = r.json().get("id", "")
@@ -645,9 +690,9 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         f"**⚙️ Para generar este video automáticamente**, registrate gratis y agregá en Railway:\n\n"
         f"| Variable | Servicio | Gratis |\n"
         f"|---|---|---|\n"
+        f"| `HUGGINGFACE_API_KEY` | [HuggingFace](https://huggingface.co) | ✅ **GRATIS permanente**, sin tarjeta |\n"
         f"| `FAL_API_KEY` | [Fal.ai](https://fal.ai) | ✅ $10 sin tarjeta (~300 videos) |\n"
         f"| `SEGMIND_API_KEY` | [Segmind](https://segmind.com) | ✅ 100 créditos/mes renovables |\n"
-        f"| `MODELSLAB_API_KEY` | [ModelsLab](https://modelslab.com) | ✅ 100 créditos gratis |\n"
         f"| `REPLICATE_API_KEY` | [Replicate](https://replicate.com) | ✅ Ya configurada |\n"
         f"{debug_info}"
     )
