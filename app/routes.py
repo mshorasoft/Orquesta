@@ -364,6 +364,10 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
     """
     import urllib.parse
 
+    # Nuestro motor propio (RunPod) — máxima prioridad
+    VIDEOGEN_URL = os.getenv("VIDEOGEN_URL", "").rstrip("/")
+    VIDEOGEN_KEY = os.getenv("VIDEOGEN_API_KEY", "")
+
     HF_KEY       = os.getenv("HUGGINGFACE_API_KEY", "")
     FAL_KEY      = os.getenv("FAL_API_KEY", "")
     SEGMIND_KEY  = os.getenv("SEGMIND_API_KEY", "")
@@ -389,46 +393,86 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
 
     enhanced = await enhance(prompt)
 
-    # ── 0. HUGGING FACE (gratis permanente, sin tarjeta) ────────────────────
+    # ── 0. ORQUESTA VIDEOGEN (motor propio en RunPod) ────────────────────────
+    if VIDEOGEN_URL and VIDEOGEN_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                # Iniciar generación
+                r = await c.post(
+                    f"{VIDEOGEN_URL}/generate",
+                    headers={"x-api-key": VIDEOGEN_KEY, "Content-Type": "application/json"},
+                    json={"prompt": enhanced, "num_frames": 49, "fps": 12}
+                )
+                if r.status_code == 200:
+                    job_id = r.json().get("job_id", "")
+                    if job_id:
+                        # Polling: esperar hasta 3 minutos
+                        async with httpx.AsyncClient(timeout=20) as c2:
+                            for _ in range(36):
+                                await asyncio.sleep(5)
+                                sr = await c2.get(
+                                    f"{VIDEOGEN_URL}/status/{job_id}",
+                                    headers={"x-api-key": VIDEOGEN_KEY}
+                                )
+                                sd = sr.json()
+                                if sd.get("status") == "done":
+                                    # Descargar el video y cachearlo
+                                    vr = await c2.get(
+                                        f"{VIDEOGEN_URL}/download/{job_id}",
+                                        headers={"x-api-key": VIDEOGEN_KEY}
+                                    )
+                                    if vr.status_code == 200:
+                                        import uuid as _uuid
+                                        token = str(_uuid.uuid4())
+                                        _file_cache[token] = (vr.content, "video.mp4", "video/mp4")
+                                        dur = sd.get("duration_s", "?")
+                                        return f"/api/download/{token}", f"🎬 Video generado con **Orquesta VideoGen** (motor propio, {dur}s).", "orquesta · videogen"
+                                elif sd.get("status") == "failed":
+                                    errors["videogen"] = sd.get("error", "failed")[:100]
+                                    break
+                else:
+                    errors["videogen"] = f"HTTP {r.status_code}: {r.text[:100]}"
+        except Exception as e:
+            errors["videogen"] = str(e)[:100]
+
+    # ── 0b. HUGGING FACE Inference API (nueva URL 2024) ──────────────────────
     if HF_KEY:
-        # Intentar ZeroScope primero (mejor calidad), luego damo-vilab
-        for hf_model in [
-            "cerspense/zeroscope_v2_576w",
-            "damo-vilab/text-to-video-ms-1.7b"
-        ]:
+        for hf_model in ["cerspense/zeroscope_v2_576w", "damo-vilab/text-to-video-ms-1.7b"]:
             try:
                 async with httpx.AsyncClient(timeout=120) as c:
+                    # Nueva URL del Inference API de HuggingFace
                     r = await c.post(
-                        f"https://api-inference.huggingface.co/models/{hf_model}",
-                        headers={"Authorization": f"Bearer {HF_KEY}"},
+                        f"https://router.huggingface.co/hf-inference/models/{hf_model}",
+                        headers={"Authorization": f"Bearer {HF_KEY}", "Content-Type": "application/json"},
                         json={"inputs": enhanced[:200]}
                     )
                     if r.status_code == 200:
-                        content_type = r.headers.get("content-type", "")
-                        if "video" in content_type or "octet-stream" in content_type or len(r.content) > 10000:
+                        ct = r.headers.get("content-type", "")
+                        if "video" in ct or "octet-stream" in ct or len(r.content) > 5000:
                             import uuid as _uuid
                             token = str(_uuid.uuid4())
                             _file_cache[token] = (r.content, "video.mp4", "video/mp4")
-                            model_short = hf_model.split("/")[-1][:20]
-                            return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({model_short}).", "huggingface · free"
+                            short = hf_model.split("/")[-1][:20]
+                            return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({short}).", "huggingface · free"
+                        else:
+                            errors[f"hf_{hf_model[-10:]}"] = f"Respuesta no es video: {ct} {len(r.content)}b"
                     elif r.status_code == 503:
-                        # Modelo cargando, esperar
-                        await asyncio.sleep(20)
+                        await asyncio.sleep(25)
                         r2 = await c.post(
-                            f"https://api-inference.huggingface.co/models/{hf_model}",
-                            headers={"Authorization": f"Bearer {HF_KEY}"},
+                            f"https://router.huggingface.co/hf-inference/models/{hf_model}",
+                            headers={"Authorization": f"Bearer {HF_KEY}", "Content-Type": "application/json"},
                             json={"inputs": enhanced[:200]}
                         )
-                        if r2.status_code == 200 and len(r2.content) > 10000:
+                        if r2.status_code == 200 and len(r2.content) > 5000:
                             import uuid as _uuid
                             token = str(_uuid.uuid4())
                             _file_cache[token] = (r2.content, "video.mp4", "video/mp4")
-                            model_short = hf_model.split("/")[-1][:20]
-                            return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({model_short}).", "huggingface · free"
+                            short = hf_model.split("/")[-1][:20]
+                            return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({short}).", "huggingface · free"
                     else:
-                        errors[f"hf_{hf_model.split('/')[-1][:10]}"] = f"HTTP {r.status_code}: {r.text[:100]}"
+                        errors[f"hf_{hf_model[-10:]}"] = f"HTTP {r.status_code}: {r.text[:120]}"
             except Exception as e:
-                errors[f"hf_{hf_model.split('/')[-1][:10]}"] = str(e)[:80]
+                errors[f"hf_{hf_model[-10:]}"] = str(e)[:80]
 
     # ── 1. FAL.AI (gratis $10 sin tarjeta) ───────────────────────────────────
     if FAL_KEY:
@@ -480,7 +524,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         try:
             async with httpx.AsyncClient(timeout=120) as c:
                 r = await c.post(
-                    "https://api.segmind.com/v1/fast-svd-xt-3frames",
+                    "https://api.segmind.com/v1/cogvideox-2b",
                     headers={"x-api-key": SEGMIND_KEY, "Content-Type": "application/json"},
                     json={
                         "prompt": enhanced,
@@ -559,7 +603,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                     "https://api.replicate.com/v1/predictions",
                     headers={"Authorization": f"Bearer {REPLICATE_KEY}", "Content-Type": "application/json"},
                     json={
-                        "version": "beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa817cabdfa",
+                        "version": "9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351",
                         "input": {"prompt": enhanced, "num_frames": 16, "num_inference_steps": 25, "fps": 8}
                     }
                 )
@@ -690,7 +734,8 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         f"**⚙️ Para generar este video automáticamente**, registrate gratis y agregá en Railway:\n\n"
         f"| Variable | Servicio | Gratis |\n"
         f"|---|---|---|\n"
-        f"| `HUGGINGFACE_API_KEY` | [HuggingFace](https://huggingface.co) | ✅ **GRATIS permanente**, sin tarjeta |\n"
+        f"| `VIDEOGEN_URL` + `VIDEOGEN_API_KEY` | Motor propio RunPod | ✅ ~$0.10/día solo cuando usás |\n"
+        f"| `HUGGINGFACE_API_KEY` | [HuggingFace](https://huggingface.co) | ✅ Gratis permanente |\n"
         f"| `FAL_API_KEY` | [Fal.ai](https://fal.ai) | ✅ $10 sin tarjeta (~300 videos) |\n"
         f"| `SEGMIND_API_KEY` | [Segmind](https://segmind.com) | ✅ 100 créditos/mes renovables |\n"
         f"| `REPLICATE_API_KEY` | [Replicate](https://replicate.com) | ✅ Ya configurada |\n"
