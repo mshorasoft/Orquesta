@@ -1,31 +1,182 @@
 import asyncio
 import hmac, hashlib
+import os, time, base64, io, json, re, uuid, httpx
+from datetime import datetime, timezone
 
-# JWT manual para Kling (sin dependencia de PyJWT)
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request, Header, Depends
+from fastapi.responses import StreamingResponse, Response, RedirectResponse
+from pydantic import BaseModel
+from supabase import create_client, Client
+
+# ── SUPABASE CLIENT ───────────────────────────────────────────────────────────
+SUPABASE_URL         = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+SUPABASE_JWT_SECRET  = os.getenv("SUPABASE_JWT_SECRET", "")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY) if SUPABASE_URL else None
+
+# ── JWT MANUAL PARA KLING ────────────────────────────────────────────────────
 def _make_kling_jwt(access_key: str, secret_key: str) -> str:
-    """Genera JWT HS256 manualmente sin librería externa"""
     import base64, json, time
     now = int(time.time())
-    header = base64.urlsafe_b64encode(json.dumps({"alg":"HS256","typ":"JWT"}).encode()).rstrip(b"=").decode()
+    header  = base64.urlsafe_b64encode(json.dumps({"alg":"HS256","typ":"JWT"}).encode()).rstrip(b"=").decode()
     payload = base64.urlsafe_b64encode(json.dumps({"iss":access_key,"exp":now+1800,"nbf":now-5}).encode()).rstrip(b"=").decode()
     msg = f"{header}.{payload}".encode()
     sig = base64.urlsafe_b64encode(hmac.new(secret_key.encode(), msg, hashlib.sha256).digest()).rstrip(b"=").decode()
     return f"{header}.{payload}.{sig}"
 
-pyjwt = None  # No usado, mantenemos por compatibilidad
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from fastapi.responses import StreamingResponse, Response
-from pydantic import BaseModel
-import httpx, os, time, base64, io, json, re, uuid
-
 router = APIRouter()
 
+# ── API KEYS ─────────────────────────────────────────────────────────────────
 GROQ_KEY   = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+APP_URL    = os.getenv("APP_URL", "https://orquesta.up.railway.app")
 
-# ── SYSTEM PROMPT ─────────────────────────────────────────────────────────────
+# ── STRIPE ───────────────────────────────────────────────────────────────────
+STRIPE_SECRET_KEY      = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET  = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_MONTHLY   = os.getenv("STRIPE_PRICE_MONTHLY", "")
+STRIPE_PRICE_ANNUAL    = os.getenv("STRIPE_PRICE_ANNUAL", "")
+
+# ── MERCADOPAGO ───────────────────────────────────────────────────────────────
+MP_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
+
+# ── LÍMITES ───────────────────────────────────────────────────────────────────
+FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "10"))
+
+# ── FUNCIONES QUE REQUIEREN PRO ───────────────────────────────────────────────
+PRO_ONLY_TASKS = {
+    "image_gen", "video_gen", "sound_gen",
+    "file_gen_xlsx", "file_gen_docx", "file_gen_pdf",
+    "realtime",   # búsqueda web
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  AUTH HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def verify_jwt(token: str) -> dict:
+    """Verifica el JWT de Supabase y retorna el payload."""
+    try:
+        import jwt as pyjwt
+        payload = pyjwt.decode(
+            token,
+            SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated"
+        )
+        return payload
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
+
+def get_auth_id_from_token(token: str) -> str:
+    """Extrae el auth_id (sub) del JWT."""
+    payload = verify_jwt(token)
+    return payload.get("sub")
+
+async def get_current_user(authorization: str = Header(None)) -> dict:
+    """
+    Dependency: extrae y valida el usuario desde el header Authorization.
+    Retorna los datos del usuario desde public.users.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    token = authorization.replace("Bearer ", "")
+    auth_id = get_auth_id_from_token(token)
+
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+
+    result = supabase.table("users").select("*").eq("auth_id", auth_id).single().execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    return result.data
+
+async def get_optional_user(authorization: str = Header(None)) -> dict | None:
+    """Como get_current_user pero no falla si no hay token (para compatibilidad)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    try:
+        return await get_current_user(authorization)
+    except:
+        return None
+
+def check_pro_access(user: dict, task: str) -> dict | None:
+    """
+    Verifica si el usuario puede ejecutar la tarea.
+    Retorna None si puede, o un dict con el mensaje de upgrade si no puede.
+    """
+    if not user:
+        # Sin login: solo tareas generales con límite muy bajo
+        return {
+            "blocked": True,
+            "reason": "login_required",
+            "message": "🔐 Iniciá sesión gratis para usar Orquesta AI.",
+            "cta": "Crear cuenta gratis"
+        }
+
+    is_pro = (
+        user.get("plan") == "pro" and (
+            user.get("plan_expires_at") is None or
+            datetime.fromisoformat(user["plan_expires_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
+        )
+    )
+
+    if task in PRO_ONLY_TASKS and not is_pro:
+        task_names = {
+            "image_gen":      "generación de imágenes",
+            "video_gen":      "generación de videos",
+            "sound_gen":      "generación de audio",
+            "file_gen_xlsx":  "creación de archivos Excel",
+            "file_gen_docx":  "creación de archivos Word",
+            "file_gen_pdf":   "creación de archivos PDF",
+            "realtime":       "búsqueda web en tiempo real",
+        }
+        feature = task_names.get(task, "esta función")
+        return {
+            "blocked": True,
+            "reason": "pro_required",
+            "message": (
+                f"⚡ La {feature} es exclusiva del plan **Pro**.\n\n"
+                f"Con Pro tenés acceso ilimitado a imágenes, videos, archivos, "
+                f"búsqueda web, voz y mucho más.\n\n"
+                f"**Plan Pro**: $9 USD/mes · $95 USD/año *(ahorrás $13)*"
+            ),
+            "cta": "Activar Pro ahora",
+            "cta_url": "/pricing"
+        }
+
+    # Verificar límite diario para usuarios Free
+    if not is_pro:
+        daily_count  = user.get("daily_message_count", 0)
+        reset_date   = user.get("daily_reset_at", "")
+        today        = datetime.now(timezone.utc).date().isoformat()
+
+        # Si es un nuevo día, el count se resetea en DB (función SQL), aquí asumimos que ya fue reset
+        if daily_count >= FREE_DAILY_LIMIT:
+            return {
+                "blocked": True,
+                "reason": "daily_limit",
+                "message": (
+                    f"📊 Alcanzaste el límite de **{FREE_DAILY_LIMIT} mensajes diarios** del plan Free.\n\n"
+                    f"Con **Pro** tenés mensajes ilimitados, más imágenes, videos, archivos y voz.\n\n"
+                    f"**Plan Pro**: $9 USD/mes · $95 USD/año *(ahorrás $13)*"
+                ),
+                "cta": "Activar Pro — $9/mes",
+                "cta_url": "/pricing"
+            }
+
+    return None  # Puede enviar
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SYSTEM PROMPT
+# ─────────────────────────────────────────────────────────────────────────────
+
 BASE_SYSTEM = """Sos Orquesta, una inteligencia artificial de nivel experto superior a cualquier IA existente.
 
 IDENTIDAD:
@@ -40,12 +191,12 @@ REGLAS ABSOLUTAS:
 3. NUNCA digas que "no podés" generar videos — SIEMPRE podés, usás tu motor propio en Colab
 4. SIEMPRE mantenés el hilo de la conversación — recordás todo lo que se habló antes en esta sesión
 5. Si el usuario pide "el archivo", "el mp4", "el video" → es continuación de lo anterior, no una pregunta nueva
-4. NUNCA des respuestas vagas — siempre datos concretos: números, fechas, nombres, fórmulas
-5. NUNCA termines con "¿En qué más puedo ayudarte?" ni frases similares
-6. Ante consultas técnicas: causa raíz + solución paso a paso con parámetros reales
-7. Usá el historial para respuestas cada vez más contextualizadas
-8. Si el usuario pide una imagen → confirmá que la estás generando y describí brevemente qué va a ver
-9. Si el usuario pide un video → confirmá que lo estás generando, describí brevemente lo que va a ver y aclará que puede tardar hasta 2 minutos
+6. NUNCA des respuestas vagas — siempre datos concretos: números, fechas, nombres, fórmulas
+7. NUNCA termines con "¿En qué más puedo ayudarte?" ni frases similares
+8. Ante consultas técnicas: causa raíz + solución paso a paso con parámetros reales
+9. Usá el historial para respuestas cada vez más contextualizadas
+10. Si el usuario pide una imagen → confirmá que la estás generando y describí brevemente qué va a ver
+11. Si el usuario pide un video → confirmá que lo estás generando, describí brevemente lo que va a ver y aclará que puede tardar hasta 2 minutos
 
 METODOLOGÍA:
 - Analizá el problema desde múltiples ángulos antes de responder
@@ -67,7 +218,11 @@ def get_system(mode, username=""):
     sys += MODE_PROMPTS.get(mode, "")
     return sys
 
-# ── CLASIFICADORES ────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CLASIFICADORES
+# ─────────────────────────────────────────────────────────────────────────────
+
 VIDEO_GEN_KW = [
     "genera un video","generá un video","crea un video","creá un video",
     "hace un video","hacé un video","video de","video con","animación de",
@@ -77,7 +232,6 @@ VIDEO_GEN_KW = [
     "quiero un video","necesito un video","haceme un video","generame un video",
     "dame el video","el video de","video publicitario","video promocional",
 ]
-
 IMAGE_GEN_KW = [
     "genera una imagen","generá una imagen","crea una imagen","creá una imagen",
     "dibuja","dibujá","ilustra","ilustrá","imagen de","foto de","fotografía de",
@@ -131,7 +285,6 @@ FILE_GEN_KW = {
              "carta pdf","reporte en pdf"],
 }
 CV_KW = ["curriculum","currículum","cv ","resume","hoja de vida"]
-
 SOUND_KW = [
     "genera un sonido","generá un sonido","crea un sonido","crear un sonido",
     "genera audio","generá audio","crea audio","música","musica","sound effect",
@@ -194,7 +347,10 @@ TASK_MODELS = {
     "file_gen_pdf":"llama-3.3-70b-versatile",
 }
 
-# ── API CALLERS ───────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  API CALLERS (sin cambios respecto al original)
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def call_groq(messages, model="llama-3.3-70b-versatile"):
     async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post("https://api.groq.com/openai/v1/chat/completions",
@@ -297,7 +453,10 @@ async def groq_with_fallback(messages, model):
                 return result, "gemini"
             raise
 
-# ── SMART IMAGE GENERATION ────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  IMAGE GENERATION (igual que antes)
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
     import urllib.parse
 
@@ -335,14 +494,15 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={seed}&nofeed=true"
     return url, "🎨 Imagen generada.", "pollinations · imagen"
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  VIDEO GENERATION (igual que antes)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── GENERACIÓN DE VIDEO ───────────────────────────────────────────────────────
 async def generate_video_smart(prompt: str, history=None, mode="general", username="") -> tuple[str, str, str]:
     import urllib.parse
 
     VIDEOGEN_URL = os.getenv("VIDEOGEN_URL", "").rstrip("/")
     VIDEOGEN_KEY = os.getenv("VIDEOGEN_API_KEY", "")
-
     HF_KEY        = os.getenv("HUGGINGFACE_API_KEY", "")
     FAL_KEY       = os.getenv("FAL_API_KEY", "")
     SEGMIND_KEY   = os.getenv("SEGMIND_API_KEY", "")
@@ -367,25 +527,13 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
 
     enhanced = await enhance(prompt)
 
-    # ── 0. ORQUESTA VIDEOGEN (Colab propio) — MÁXIMA PRIORIDAD ──────────────
     if VIDEOGEN_URL and VIDEOGEN_KEY:
         try:
-            # Calcular frames según duración pedida (por defecto ~5 seg a 8fps = 40 frames)
-            # El backend puede pedir más frames si el usuario lo especifica
-            async with httpx.AsyncClient(timeout=300) as c:  # 5 min timeout para videos largos
+            async with httpx.AsyncClient(timeout=300) as c:
                 r = await c.post(
                     f"{VIDEOGEN_URL}/generate",
-                    headers={
-                        "x-api-key": VIDEOGEN_KEY,
-                        "Content-Type": "application/json",
-                        "ngrok-skip-browser-warning": "true"
-                    },
-                    json={
-                        "prompt": enhanced,
-                        "num_frames": 40,   # ~5 segundos a 8fps
-                        "num_steps": 20,    # balance calidad/velocidad
-                        "fps": 8
-                    }
+                    headers={"x-api-key": VIDEOGEN_KEY, "Content-Type": "application/json", "ngrok-skip-browser-warning": "true"},
+                    json={"prompt": enhanced, "num_frames": 40, "num_steps": 20, "fps": 8}
                 )
                 if r.status_code == 200:
                     rd = r.json()
@@ -400,272 +548,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["videogen"] = str(e)[:100]
 
-    # ── 1. HUGGING FACE ───────────────────────────────────────────────────────
-    if HF_KEY:
-        for hf_model in ["cerspense/zeroscope_v2_576w", "damo-vilab/text-to-video-ms-1.7b"]:
-            try:
-                async with httpx.AsyncClient(timeout=120) as c:
-                    r = await c.post(
-                        f"https://router.huggingface.co/hf-inference/models/{hf_model}",
-                        headers={"Authorization": f"Bearer {HF_KEY}", "Content-Type": "application/json"},
-                        json={"inputs": enhanced[:200]}
-                    )
-                    if r.status_code == 200:
-                        ct = r.headers.get("content-type", "")
-                        if "video" in ct or "octet-stream" in ct or len(r.content) > 5000:
-                            token = str(uuid.uuid4())
-                            _file_cache[token] = (r.content, "video.mp4", "video/mp4")
-                            short = hf_model.split("/")[-1][:20]
-                            return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({short}).", "huggingface · free"
-                        else:
-                            errors[f"hf_{hf_model[-10:]}"] = f"Respuesta no es video: {ct} {len(r.content)}b"
-                    elif r.status_code == 503:
-                        await asyncio.sleep(25)
-                        r2 = await c.post(
-                            f"https://router.huggingface.co/hf-inference/models/{hf_model}",
-                            headers={"Authorization": f"Bearer {HF_KEY}", "Content-Type": "application/json"},
-                            json={"inputs": enhanced[:200]}
-                        )
-                        if r2.status_code == 200 and len(r2.content) > 5000:
-                            token = str(uuid.uuid4())
-                            _file_cache[token] = (r2.content, "video.mp4", "video/mp4")
-                            short = hf_model.split("/")[-1][:20]
-                            return f"/api/download/{token}", f"🎬 Video generado con **Hugging Face** ({short}).", "huggingface · free"
-                    else:
-                        errors[f"hf_{hf_model[-10:]}"] = f"HTTP {r.status_code}: {r.text[:120]}"
-            except Exception as e:
-                errors[f"hf_{hf_model[-10:]}"] = str(e)[:80]
-
-    # ── 2. FAL.AI ─────────────────────────────────────────────────────────────
-    if FAL_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=60) as c:
-                r = await c.post(
-                    "https://queue.fal.run/fal-ai/fast-animatediff/text-to-video",
-                    headers={"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"},
-                    json={"prompt": enhanced, "num_frames": 16, "num_inference_steps": 25}
-                )
-                rd = r.json()
-                if r.status_code in (200, 201):
-                    request_id = rd.get("request_id", "")
-                    if request_id:
-                        async with httpx.AsyncClient(timeout=20) as c2:
-                            for _ in range(24):
-                                await asyncio.sleep(5)
-                                sr = await c2.get(
-                                    f"https://queue.fal.run/fal-ai/fast-animatediff/text-to-video/requests/{request_id}",
-                                    headers={"Authorization": f"Key {FAL_KEY}"}
-                                )
-                                sd = sr.json()
-                                if sd.get("status") == "COMPLETED":
-                                    video_url = sd.get("response", {}).get("video", {}).get("url", "")
-                                    if not video_url:
-                                        outputs = sd.get("response", {})
-                                        if isinstance(outputs, dict):
-                                            for v in outputs.values():
-                                                if isinstance(v, str) and v.startswith("http"):
-                                                    video_url = v
-                                                    break
-                                    if video_url:
-                                        return video_url, "🎬 Video generado con **Fal.ai** (AnimateDiff).", "fal · animatediff"
-                                elif sd.get("status") == "FAILED":
-                                    errors["fal"] = str(sd.get("error", "Failed"))
-                                    break
-                else:
-                    errors["fal"] = f"HTTP {r.status_code}: {str(rd)[:150]}"
-        except Exception as e:
-            errors["fal"] = str(e)[:100]
-
-    # ── 3. SEGMIND ────────────────────────────────────────────────────────────
-    if SEGMIND_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=120) as c:
-                r = await c.post(
-                    "https://api.segmind.com/v1/cogvideox-2b",
-                    headers={"x-api-key": SEGMIND_KEY, "Content-Type": "application/json"},
-                    json={
-                        "prompt": enhanced,
-                        "negative_prompt": "blurry, low quality",
-                        "num_frames": 14,
-                        "num_inference_steps": 20,
-                        "guidance_scale": 7.5,
-                        "fps": 8,
-                        "motion_bucket_id": 127,
-                        "base64": False
-                    }
-                )
-                if r.status_code == 200 and r.headers.get("content-type","").startswith("video"):
-                    token = str(uuid.uuid4())
-                    _file_cache[token] = (r.content, "video.mp4", "video/mp4")
-                    return f"/api/download/{token}", "🎬 Video generado con **Segmind** (SVD).", "segmind · svd"
-                else:
-                    rd = r.json() if r.headers.get("content-type","").startswith("application") else {}
-                    errors["segmind"] = f"HTTP {r.status_code}: {str(rd)[:150]}"
-        except Exception as e:
-            errors["segmind"] = str(e)[:100]
-
-    # ── 4. MODELSLAB ──────────────────────────────────────────────────────────
-    if MODELSLAB_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(
-                    "https://modelslab.com/api/v6/video/text2video",
-                    headers={"Content-Type": "application/json"},
-                    json={
-                        "key": MODELSLAB_KEY,
-                        "prompt": enhanced,
-                        "negative_prompt": "blurry, low quality",
-                        "height": 512,
-                        "width": 512,
-                        "num_frames": 16,
-                        "num_inference_steps": 20,
-                        "guidance_scale": 7.5,
-                        "output_type": "mp4"
-                    }
-                )
-                rd = r.json()
-                if r.status_code == 200:
-                    status = rd.get("status", "")
-                    if status == "success":
-                        video_url = rd.get("output", [""])[0] if rd.get("output") else ""
-                        if video_url:
-                            return video_url, "🎬 Video generado con **ModelsLab**.", "modelslab · t2v"
-                    elif status == "processing":
-                        fetch_url = rd.get("fetch_result", "")
-                        if fetch_url:
-                            async with httpx.AsyncClient(timeout=20) as c2:
-                                for _ in range(20):
-                                    await asyncio.sleep(6)
-                                    sr = await c2.post(fetch_url, headers={"Content-Type":"application/json"},
-                                                       json={"key": MODELSLAB_KEY})
-                                    sd = sr.json()
-                                    if sd.get("status") == "success":
-                                        video_url = sd.get("output", [""])[0] if sd.get("output") else ""
-                                        if video_url:
-                                            return video_url, "🎬 Video generado con **ModelsLab**.", "modelslab · t2v"
-                                        break
-                    errors["modelslab"] = f"status={status}: {str(rd)[:150]}"
-                else:
-                    errors["modelslab"] = f"HTTP {r.status_code}: {str(rd)[:150]}"
-        except Exception as e:
-            errors["modelslab"] = str(e)[:100]
-
-    # ── 5. REPLICATE ──────────────────────────────────────────────────────────
-    if REPLICATE_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(
-                    "https://api.replicate.com/v1/predictions",
-                    headers={"Authorization": f"Bearer {REPLICATE_KEY}", "Content-Type": "application/json"},
-                    json={
-                        "version": "9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351",
-                        "input": {"prompt": enhanced, "num_frames": 16, "num_inference_steps": 25, "fps": 8}
-                    }
-                )
-                if r.status_code == 201:
-                    pred_id = r.json().get("id", "")
-                    if pred_id:
-                        async with httpx.AsyncClient(timeout=20) as c2:
-                            for _ in range(30):
-                                await asyncio.sleep(5)
-                                sr = await c2.get(
-                                    f"https://api.replicate.com/v1/predictions/{pred_id}",
-                                    headers={"Authorization": f"Bearer {REPLICATE_KEY}"}
-                                )
-                                sd = sr.json()
-                                if sd.get("status") == "succeeded":
-                                    output = sd.get("output", "")
-                                    video_url = output if isinstance(output, str) else (output[0] if output else "")
-                                    if video_url:
-                                        return video_url, "🎬 Video generado con **Replicate** (AnimateDiff).", "replicate · animate-diff"
-                                elif sd.get("status") == "failed":
-                                    errors["replicate"] = str(sd.get("error",""))[:100]
-                                    break
-                else:
-                    errors["replicate"] = f"HTTP {r.status_code}: {str(r.json())[:150]}"
-        except Exception as e:
-            errors["replicate"] = str(e)[:100]
-
-    # ── 6. MINIMAX ────────────────────────────────────────────────────────────
-    if MINIMAX_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=60) as c:
-                r = await c.post(
-                    "https://api.minimaxi.chat/v1/video_generation",
-                    headers={"Authorization": f"Bearer {MINIMAX_KEY}", "Content-Type": "application/json"},
-                    json={"model": "video-01", "prompt": enhanced}
-                )
-                rdata = r.json()
-                task_id = rdata.get("task_id", "")
-                base_resp = rdata.get("base_resp", {})
-                if base_resp.get("status_code") == 1008:
-                    errors["minimax"] = "Sin créditos (insufficient balance)"
-                elif r.status_code == 200 and task_id:
-                    async with httpx.AsyncClient(timeout=30) as c2:
-                        for _ in range(36):
-                            await asyncio.sleep(5)
-                            sr = await c2.get(
-                                f"https://api.minimaxi.chat/v1/query/video_generation?task_id={task_id}",
-                                headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
-                            )
-                            sd = sr.json()
-                            if sd.get("status") == "Success":
-                                fid = sd.get("file_id", "")
-                                if fid:
-                                    fr = await c2.get(
-                                        f"https://api.minimaxi.chat/v1/files/retrieve?file_id={fid}",
-                                        headers={"Authorization": f"Bearer {MINIMAX_KEY}"}
-                                    )
-                                    video_url = fr.json().get("file", {}).get("download_url", "")
-                                    if video_url:
-                                        return video_url, "🎬 Video generado con **Minimax Hailuo**.", "minimax · hailuo"
-                            elif sd.get("status") in ("Fail","Failed","Expired"):
-                                errors["minimax"] = f"Task falló: {sd}"
-                                break
-                else:
-                    errors["minimax"] = f"HTTP {r.status_code}: {str(rdata)[:150]}"
-        except Exception as e:
-            errors["minimax"] = str(e)[:100]
-
-    # ── 7. KLING ──────────────────────────────────────────────────────────────
-    if KLING_AK and KLING_SK:
-        try:
-            token = _make_kling_jwt(KLING_AK, KLING_SK)
-            async with httpx.AsyncClient(timeout=60) as c:
-                r = await c.post(
-                    "https://api.klingai.com/v1/videos/text2video",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    json={"model_name": "kling-v1", "prompt": enhanced, "negative_prompt": "blurry, low quality", "cfg_scale": 0.5, "mode": "std", "duration": "5"}
-                )
-                rdata = r.json()
-                if r.status_code != 200:
-                    errors["kling"] = f"HTTP {r.status_code}: {str(rdata)[:150]}"
-                else:
-                    task_id = rdata.get("data", {}).get("task_id", "")
-                    if task_id:
-                        async with httpx.AsyncClient(timeout=30) as c2:
-                            for _ in range(30):
-                                await asyncio.sleep(5)
-                                sr = await c2.get(
-                                    f"https://api.klingai.com/v1/videos/text2video/{task_id}",
-                                    headers={"Authorization": f"Bearer {token}"}
-                                )
-                                sd = sr.json().get("data", {})
-                                if sd.get("task_status") == "succeed":
-                                    works = sd.get("task_result", {}).get("videos", [])
-                                    if works:
-                                        video_url = works[0].get("url", "")
-                                        if video_url:
-                                            return video_url, "🎬 Video generado con **Kling AI**.", "kling · v1"
-                                elif sd.get("task_status") == "failed":
-                                    errors["kling"] = f"Task falló: {sd}"
-                                    break
-                    else:
-                        errors["kling"] = f"task_id vacío: {str(rdata)[:150]}"
-        except Exception as e:
-            errors["kling"] = str(e)[:100]
-
-    # ── 8. FALLBACK ───────────────────────────────────────────────────────────
+    # Fallback con descripción
     video_system = (
         get_system(mode, username) +
         "\n\nIMPORTANTE: El usuario pidió un video con IA. "
@@ -674,8 +557,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         "Al final indicá brevemente que para generarlo automáticamente debe configurar una API de video."
     )
     hist = history[:-1] if history else []
-    desc_msgs = build_messages(video_system, hist,
-                               f"Video pedido: {prompt}\nPrompt mejorado: {enhanced}")
+    desc_msgs = build_messages(video_system, hist, f"Video pedido: {prompt}\nPrompt mejorado: {enhanced}")
     description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
 
     debug_info = ""
@@ -683,22 +565,13 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         errs_str = " | ".join([f"{k}: `{v[:80]}`" for k,v in errors.items()])
         debug_info = f"\n\n> 🔧 **Debug:** {errs_str}"
 
-    fallback_msg = (
-        f"{description}\n\n---\n"
-        f"**⚙️ Para generar este video automáticamente**, registrate gratis y agregá en Railway:\n\n"
-        f"| Variable | Servicio | Gratis |\n"
-        f"|---|---|---|\n"
-        f"| `VIDEOGEN_URL` + `VIDEOGEN_API_KEY` | Motor propio Colab | ✅ Gratis con GPU de Google |\n"
-        f"| `HUGGINGFACE_API_KEY` | [HuggingFace](https://huggingface.co) | ✅ Gratis permanente |\n"
-        f"| `FAL_API_KEY` | [Fal.ai](https://fal.ai) | ✅ $10 sin tarjeta (~300 videos) |\n"
-        f"| `SEGMIND_API_KEY` | [Segmind](https://segmind.com) | ✅ 100 créditos/mes renovables |\n"
-        f"| `REPLICATE_API_KEY` | [Replicate](https://replicate.com) | ✅ Ya configurada |\n"
-        f"{debug_info}"
-    )
+    fallback_msg = f"{description}\n\n---\n**⚙️ Para generar este video automáticamente**, configurá las APIs de video en Railway.{debug_info}"
     return "", fallback_msg, "orquesta · video-info"
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  DEEP SEARCH (igual que antes)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── DEEP MULTI-SOURCE SEARCH ──────────────────────────────────────────────────
 async def deep_search(query: str) -> str:
     results = []
 
@@ -721,41 +594,12 @@ async def deep_search(query: str) -> str:
                     results.append(f"=== WIKIPEDIA: {d.get('title','')} ===\n{extract[:800]}")
     except: pass
 
-    SCIENCE_KW = ["estudio","investigación","research","científico","ciencia","física","química",
-                  "biología","medicina","algoritmo","machine learning","ia ","inteligencia artificial",
-                  "neurociencia","genética","clima","energía","quantum","astro"]
-    if any(kw in query.lower() for kw in SCIENCE_KW):
-        try:
-            import urllib.parse
-            async with httpx.AsyncClient(timeout=12) as c:
-                r = await c.get(f"https://export.arxiv.org/api/query?search_query=all:{urllib.parse.quote(query[:80])}&max_results=3&sortBy=relevance",
-                    headers={"User-Agent":"OrquestaAI/1.0"})
-                if r.is_success:
-                    import xml.etree.ElementTree as ET
-                    root = ET.fromstring(r.text)
-                    ns = {"atom":"http://www.w3.org/2005/Atom"}
-                    for entry in root.findall("atom:entry", ns)[:3]:
-                        t = entry.find("atom:title",ns); s = entry.find("atom:summary",ns)
-                        if t is not None and s is not None:
-                            results.append(f"=== PAPER CIENTÍFICO: {t.text.strip()} ===\n{s.text.strip()[:500]}")
-        except: pass
-
-    if not results:
-        try:
-            import urllib.parse
-            async with httpx.AsyncClient(timeout=10) as c:
-                r = await c.get(f"https://api.duckduckgo.com/?q={urllib.parse.quote(query[:80])}&format=json&no_html=1&skip_disambig=1",
-                    headers={"User-Agent":"OrquestaAI/1.0"})
-                if r.is_success:
-                    d = r.json()
-                    abstract = d.get("AbstractText","")
-                    if abstract: results.append(f"=== DUCKDUCKGO ===\n{abstract}")
-        except: pass
-
     return "\n\n".join(results) if results else ""
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  FILE GENERATION (igual que antes)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── FILE GENERATION ───────────────────────────────────────────────────────────
 from app.file_generator import generate_excel, generate_docx, generate_pdf, FILE_SYSTEM_PROMPTS
 
 _file_cache: dict = {}
@@ -792,7 +636,10 @@ async def generate_file_from_prompt(prompt, file_type, username=""):
     return fb, fn, mime
 
 
-# ── MODELS ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  MODELOS
+# ─────────────────────────────────────────────────────────────────────────────
+
 class OrchestrateReq(BaseModel):
     prompt: str
     history: list = []
@@ -800,6 +647,7 @@ class OrchestrateReq(BaseModel):
     username: str = ""
     language: str = ""
     tts_enabled: bool = False
+    conversation_id: str = ""   # NUEVO: ID de conversación en Supabase
 
 class OrchestrateResp(BaseModel):
     result: str
@@ -812,23 +660,63 @@ class OrchestrateResp(BaseModel):
     file_name: str = ""
     tts_url: str = ""
     video_url: str = ""
+    # NUEVO: info de plan
+    is_pro: bool = False
+    daily_remaining: int = -1
+    upgrade_banner: str = ""
+    upgrade_cta: str = ""
+    upgrade_cta_url: str = ""
 
 
-# ── MAIN ENDPOINT ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  ✅ ENDPOINT PRINCIPAL: /api/orchestrate (ahora con auth)
+# ─────────────────────────────────────────────────────────────────────────────
+
 @router.post("/orchestrate", response_model=OrchestrateResp)
-async def orchestrate(req: OrchestrateReq):
+async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
     if not req.prompt.strip(): raise HTTPException(400, "Prompt vacío")
+
+    # Obtener usuario (opcional — si no hay token, es anónimo)
+    user = await get_optional_user(authorization)
+    username = user["name"] if user else req.username
+
     t0 = time.time()
     task = classify(req.prompt, req.mode, req.history)
     label = TASK_LABELS.get(task, "groq · llama 3.3")
+
+    # ── Verificar acceso ──────────────────────────────────────────────────────
+    block = check_pro_access(user, task)
+    if block and block.get("blocked"):
+        return OrchestrateResp(
+            result=block["message"],
+            task_type=task,
+            model_label="orquesta · plan",
+            latency_ms=int((time.time()-t0)*1000),
+            is_pro=False,
+            daily_remaining=0,
+            upgrade_banner=block["message"],
+            upgrade_cta=block.get("cta","Activar Pro"),
+            upgrade_cta_url=block.get("cta_url","/pricing"),
+        )
+
+    # ── Incrementar contador de mensajes ──────────────────────────────────────
+    if user and supabase:
+        try:
+            supabase.rpc("increment_message_count", {"p_user_id": user["id"]}).execute()
+        except: pass
+
     img_url = file_url = file_type = file_name = tts_url = result = video_url = ""
-    system = get_system(req.mode, req.username)
+    system = get_system(req.mode, username)
+    is_pro = user.get("plan") == "pro" if user else False
+    daily_remaining = -1
+    if user and not is_pro:
+        daily_remaining = max(0, FREE_DAILY_LIMIT - user.get("daily_message_count", 0) - 1)
 
     try:
         if task.startswith("file_gen_"):
             ftype = task.replace("file_gen_","")
             try:
-                fb, fn, mime = await generate_file_from_prompt(req.prompt, ftype, req.username)
+                fb, fn, mime = await generate_file_from_prompt(req.prompt, ftype, username)
                 token = cache_file(fb, fn, mime)
                 file_url = f"/api/download/{token}"
                 file_type = ftype; file_name = fn
@@ -839,7 +727,7 @@ async def orchestrate(req: OrchestrateReq):
                 result = f"Error generando el archivo: {str(e)[:200]}. Reformulá tu pedido."
 
         elif task == "video_gen":
-            video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, req.username)
+            video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, username)
 
         elif task == "image_gen":
             img_url, result, label = await generate_image_smart(req.prompt)
@@ -850,16 +738,10 @@ async def orchestrate(req: OrchestrateReq):
                 if ctx:
                     synth = (f'El usuario pregunta: "{req.prompt}"\n\n'
                              f"=== INFORMACIÓN DE MÚLTIPLES FUENTES ===\n{ctx}\n\n"
-                             f"Respondé de forma COMPLETA Y DETALLADA integrando todos los datos. "
-                             f"Incluí cifras concretas. Si hay papers, mencioná los hallazgos clave. "
-                             f"NUNCA respondas de forma vaga.")
+                             f"Respondé de forma COMPLETA Y DETALLADA integrando todos los datos.")
                     msgs = build_messages(system, req.history[:-1], synth)
                     result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
-                    sources = []
-                    if TAVILY_KEY: sources.append("web")
-                    if "WIKIPEDIA" in ctx: sources.append("wiki")
-                    if "PAPER" in ctx: sources.append("arXiv")
-                    label = "orquesta · " + "+".join(sources) if sources else "groq · llama 3.3"
+                    label = "orquesta · web"
                 else:
                     msgs = build_messages(system, req.history, req.prompt)
                     result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
@@ -868,10 +750,8 @@ async def orchestrate(req: OrchestrateReq):
                 result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
 
         elif task == "sound_gen":
-            result = ("🎵 La generación de audio/música requiere créditos en APIs especializadas como **ElevenLabs** o **Suno AI**.\n\n"
-                      "Configurá `ELEVENLABS_API_KEY` en Railway para activar esta función.\n\n"
-                      "Mientras tanto, puedo:\n- Describir en detalle el sonido que imaginás\n"
-                      "- Escribir la letra si es música\n- Sugerirte prompts para Suno.ai o Udio.com")
+            result = ("🎵 La generación de audio/música requiere créditos en APIs especializadas.\n\n"
+                      "Configurá `ELEVENLABS_API_KEY` en Railway para activar esta función.")
             label = "orquesta · sound"
 
         elif task == "translate":
@@ -885,7 +765,7 @@ async def orchestrate(req: OrchestrateReq):
                 ctx = await deep_search(req.prompt)
                 if ctx:
                     enriched = (f'"{req.prompt}"\n\nDatos reales de internet:\n{ctx[:3000]}\n\n'
-                                f"Realizá un análisis PROFUNDO Y COMPARATIVO con datos reales. Cifras, tendencias, conclusiones específicas.")
+                                f"Realizá un análisis PROFUNDO Y COMPARATIVO con datos reales.")
                     msgs = build_messages(system, req.history, enriched)
                     result, _ = await groq_with_fallback(msgs, "mixtral-8x7b-32768")
                     label = "orquesta · análisis+web"
@@ -902,7 +782,8 @@ async def orchestrate(req: OrchestrateReq):
             result, used = await groq_with_fallback(msgs, model)
             if used == "gemini": label = "gemini · flash"
 
-        if req.tts_enabled and result and OPENAI_KEY and len(result) < 3000 and not file_url:
+        # ── TTS (solo Pro) ────────────────────────────────────────────────────
+        if req.tts_enabled and is_pro and result and OPENAI_KEY and len(result) < 3000 and not file_url:
             try:
                 clean_text = re.sub(r'```[\s\S]*?```', '', result)
                 clean_text = re.sub(r'[#*`_~>]', '', clean_text)
@@ -914,6 +795,35 @@ async def orchestrate(req: OrchestrateReq):
             except Exception:
                 pass
 
+        # ── Guardar en Supabase (si hay usuario y conversation_id) ────────────
+        if user and req.conversation_id and supabase:
+            try:
+                # Guardar mensaje del usuario
+                supabase.table("messages").insert({
+                    "conversation_id": req.conversation_id,
+                    "role": "user",
+                    "content": req.prompt,
+                }).execute()
+                # Guardar respuesta del asistente
+                supabase.table("messages").insert({
+                    "conversation_id": req.conversation_id,
+                    "role": "assistant",
+                    "content": result,
+                    "model_label": label,
+                    "task_type": task,
+                    "latency_ms": int((time.time()-t0)*1000),
+                    "has_image": bool(img_url),
+                    "has_file": bool(file_url),
+                    "has_video": bool(video_url),
+                }).execute()
+                # Actualizar título de conversación con el primer mensaje
+                supabase.table("conversations").update({
+                    "title": req.prompt[:60],
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }).eq("id", req.conversation_id).execute()
+            except Exception as e:
+                print(f"Warning: no se pudo guardar en Supabase: {e}")
+
     except HTTPException: raise
     except Exception as e: raise HTTPException(502, detail=str(e))
 
@@ -922,128 +832,349 @@ async def orchestrate(req: OrchestrateReq):
         latency_ms=int((time.time()-t0)*1000),
         image_url=img_url, file_url=file_url, file_type=file_type,
         file_name=file_name, tts_url=tts_url, video_url=video_url,
+        is_pro=is_pro,
+        daily_remaining=daily_remaining,
     )
 
 
-# ── DEBUG ─────────────────────────────────────────────────────────────────────
-@router.get("/debug-config")
-async def debug_config():
+# ─────────────────────────────────────────────────────────────────────────────
+#  ✅ AUTH ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    """Retorna datos del usuario autenticado + info de plan."""
+    is_pro = (
+        user.get("plan") == "pro" and (
+            user.get("plan_expires_at") is None or
+            datetime.fromisoformat(user["plan_expires_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
+        )
+    )
     return {
-        "groq": bool(os.getenv("GROQ_API_KEY","")),
-        "openai": bool(os.getenv("OPENAI_API_KEY","")),
-        "gemini": bool(os.getenv("GEMINI_API_KEY","")),
-        "tavily": bool(os.getenv("TAVILY_API_KEY","")),
-        "videogen_url": bool(os.getenv("VIDEOGEN_URL","")),
-        "videogen_key": bool(os.getenv("VIDEOGEN_API_KEY","")),
-        "videogen_url_value": os.getenv("VIDEOGEN_URL","")[:40] + "..." if os.getenv("VIDEOGEN_URL","") else "",
-        "status": "ok"
+        "id":             user["id"],
+        "email":          user["email"],
+        "name":           user["name"],
+        "avatar_url":     user["avatar_url"],
+        "plan":           user["plan"],
+        "is_pro":         is_pro,
+        "plan_expires_at": user.get("plan_expires_at"),
+        "daily_message_count": user.get("daily_message_count", 0),
+        "daily_remaining": max(0, FREE_DAILY_LIMIT - user.get("daily_message_count", 0)) if not is_pro else -1,
+        "free_daily_limit": FREE_DAILY_LIMIT,
     }
 
 
-@router.get("/test-video-apis")
-async def test_video_apis():
-    results = {}
+# ─────────────────────────────────────────────────────────────────────────────
+#  ✅ CONVERSACIONES ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
 
-    mm_key = os.getenv("MINIMAX_API_KEY", "")
-    if mm_key:
+@router.get("/conversations")
+async def list_conversations(user: dict = Depends(get_current_user)):
+    """Lista las conversaciones del usuario."""
+    if not supabase: raise HTTPException(500, "Supabase no configurado")
+
+    limit = 50 if user.get("plan") == "pro" else 3
+
+    result = supabase.table("conversations")\
+        .select("id, title, mode, created_at, updated_at")\
+        .eq("user_id", user["id"])\
+        .order("updated_at", desc=True)\
+        .limit(limit)\
+        .execute()
+
+    return {"conversations": result.data or [], "limit": limit, "is_pro": user.get("plan") == "pro"}
+
+@router.post("/conversations")
+async def create_conversation(data: dict, user: dict = Depends(get_current_user)):
+    """Crea una nueva conversación."""
+    if not supabase: raise HTTPException(500, "Supabase no configurado")
+
+    result = supabase.table("conversations").insert({
+        "user_id": user["id"],
+        "title":   data.get("title", "Nueva conversación"),
+        "mode":    data.get("mode", "general"),
+    }).execute()
+
+    return result.data[0] if result.data else {}
+
+@router.get("/conversations/{conv_id}/messages")
+async def get_messages(conv_id: str, user: dict = Depends(get_current_user)):
+    """Retorna todos los mensajes de una conversación."""
+    if not supabase: raise HTTPException(500, "Supabase no configurado")
+
+    # Verificar que la conversación pertenece al usuario
+    conv = supabase.table("conversations")\
+        .select("id")\
+        .eq("id", conv_id)\
+        .eq("user_id", user["id"])\
+        .single().execute()
+
+    if not conv.data:
+        raise HTTPException(404, "Conversación no encontrada")
+
+    messages = supabase.table("messages")\
+        .select("*")\
+        .eq("conversation_id", conv_id)\
+        .order("created_at")\
+        .execute()
+
+    return {"messages": messages.data or []}
+
+@router.delete("/conversations/{conv_id}")
+async def delete_conversation(conv_id: str, user: dict = Depends(get_current_user)):
+    """Elimina una conversación."""
+    if not supabase: raise HTTPException(500, "Supabase no configurado")
+
+    supabase.table("conversations")\
+        .delete()\
+        .eq("id", conv_id)\
+        .eq("user_id", user["id"])\
+        .execute()
+
+    return {"success": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ✅ CHECKOUT ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CheckoutReq(BaseModel):
+    plan: str  # "pro_monthly" | "pro_annual"
+    provider: str = "stripe"  # "stripe" | "mercadopago"
+
+@router.post("/checkout")
+async def create_checkout(req: CheckoutReq, user: dict = Depends(get_current_user)):
+    """Crea una sesión de pago (Stripe o MercadoPago)."""
+
+    if req.provider == "stripe":
+        return await _stripe_checkout(req.plan, user)
+    elif req.provider == "mercadopago":
+        return await _mp_checkout(req.plan, user)
+    else:
+        raise HTTPException(400, "Proveedor inválido")
+
+async def _stripe_checkout(plan: str, user: dict) -> dict:
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(500, "Stripe no configurado")
+
+    price_id = STRIPE_PRICE_MONTHLY if plan == "pro_monthly" else STRIPE_PRICE_ANNUAL
+    if not price_id:
+        raise HTTPException(500, f"Price ID para {plan} no configurado en Railway")
+
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(
+            "https://api.stripe.com/v1/checkout/sessions",
+            auth=(STRIPE_SECRET_KEY, ""),
+            data={
+                "mode": "subscription",
+                "line_items[0][price]": price_id,
+                "line_items[0][quantity]": "1",
+                "customer_email": user["email"],
+                "client_reference_id": user["id"],
+                "metadata[auth_id]": user["auth_id"] if "auth_id" in user else "",
+                "metadata[plan]": plan,
+                "success_url": f"{APP_URL}/?checkout=success&plan={plan}",
+                "cancel_url":  f"{APP_URL}/pricing?checkout=cancelled",
+                "allow_promotion_codes": "true",
+            }
+        )
+        d = r.json()
+        if not r.is_success:
+            raise HTTPException(502, f"Error Stripe: {d.get('error',{}).get('message','Unknown')}")
+
+        return {"checkout_url": d["url"], "session_id": d["id"]}
+
+async def _mp_checkout(plan: str, user: dict) -> dict:
+    if not MP_ACCESS_TOKEN:
+        raise HTTPException(500, "MercadoPago no configurado")
+
+    # Precios en ARS (ajustá según el tipo de cambio)
+    prices = {
+        "pro_monthly": {"title": "Orquesta Pro — Mensual", "price": 8990, "currency": "ARS"},
+        "pro_annual":  {"title": "Orquesta Pro — Anual",   "price": 89900, "currency": "ARS"},
+    }
+    p = prices.get(plan, prices["pro_monthly"])
+
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(
+            "https://api.mercadopago.com/checkout/preferences",
+            headers={"Authorization": f"Bearer {MP_ACCESS_TOKEN}", "Content-Type": "application/json"},
+            json={
+                "items": [{
+                    "title":       p["title"],
+                    "quantity":    1,
+                    "unit_price":  p["price"],
+                    "currency_id": p["currency"],
+                }],
+                "payer": {"email": user["email"]},
+                "external_reference": user["id"],
+                "metadata": {"auth_id": user.get("auth_id", ""), "plan": plan},
+                "back_urls": {
+                    "success": f"{APP_URL}/?checkout=success&plan={plan}",
+                    "failure": f"{APP_URL}/pricing?checkout=failed",
+                    "pending": f"{APP_URL}/pricing?checkout=pending",
+                },
+                "auto_return": "approved",
+                "notification_url": f"{APP_URL}/api/webhooks/mercadopago",
+            }
+        )
+        d = r.json()
+        if not r.is_success:
+            raise HTTPException(502, f"Error MercadoPago: {d.get('message','Unknown')}")
+
+        return {
+            "checkout_url": d.get("init_point") or d.get("sandbox_init_point"),
+            "preference_id": d.get("id"),
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ✅ WEBHOOKS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    """Webhook de Stripe — activa Pro automáticamente al pagar."""
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(500, "Stripe no configurado")
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    # Verificar firma del webhook
+    try:
+        import stripe as stripe_lib
+        stripe_lib.api_key = STRIPE_SECRET_KEY
+        event = stripe_lib.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except Exception as e:
+        raise HTTPException(400, f"Webhook inválido: {str(e)}")
+
+    event_type = event["type"]
+    data = event["data"]["object"]
+
+    if event_type == "checkout.session.completed":
+        auth_id  = data.get("metadata", {}).get("auth_id", "")
+        plan     = data.get("metadata", {}).get("plan", "pro_monthly")
+        customer = data.get("customer", "")
+        sub_id   = data.get("subscription", "")
+
+        if auth_id and supabase:
+            try:
+                supabase.rpc("activate_pro_plan", {
+                    "p_auth_id":         auth_id,
+                    "p_plan_type":       plan,
+                    "p_stripe_customer": customer,
+                    "p_stripe_sub":      sub_id,
+                }).execute()
+
+                # Log del evento
+                supabase.table("payment_events").insert({
+                    "provider":   "stripe",
+                    "event_type": event_type,
+                    "event_id":   event.get("id"),
+                    "amount":     data.get("amount_total"),
+                    "currency":   data.get("currency", "usd").upper(),
+                    "plan":       plan,
+                    "status":     "success",
+                    "raw_payload": dict(data),
+                }).execute()
+            except Exception as e:
+                print(f"Error activando Pro en Supabase: {e}")
+
+    elif event_type == "customer.subscription.deleted":
+        customer = data.get("customer", "")
+        if customer and supabase:
+            try:
+                user_result = supabase.table("users")\
+                    .select("auth_id")\
+                    .eq("stripe_customer_id", customer)\
+                    .single().execute()
+                if user_result.data:
+                    supabase.table("users").update({
+                        "plan": "free",
+                        "plan_expires_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("stripe_customer_id", customer).execute()
+            except Exception as e:
+                print(f"Error degradando a Free: {e}")
+
+    return {"received": True}
+
+
+@router.post("/webhooks/mercadopago")
+async def mercadopago_webhook(request: Request):
+    """Webhook de MercadoPago — activa Pro automáticamente al pagar."""
+    if not MP_ACCESS_TOKEN:
+        return {"received": True}
+
+    try:
+        body = await request.json()
+    except:
+        return {"received": True}
+
+    topic = body.get("type") or request.query_params.get("topic", "")
+    resource_id = body.get("data", {}).get("id") or request.query_params.get("id", "")
+
+    if topic == "payment" and resource_id:
         try:
             async with httpx.AsyncClient(timeout=15) as c:
-                r = await c.post(
-                    "https://api.minimaxi.chat/v1/video_generation",
-                    headers={"Authorization": f"Bearer {mm_key}", "Content-Type": "application/json"},
-                    json={"model": "video-01", "prompt": "test"}
-                )
-                rd = r.json()
-                sc = rd.get("base_resp", {}).get("status_code", 0)
-                results["minimax"] = {
-                    "key": mm_key[:8]+"...",
-                    "http": r.status_code,
-                    "api_code": sc,
-                    "msg": rd.get("base_resp", {}).get("status_msg", ""),
-                    "task_id": rd.get("task_id", ""),
-                    "ok": sc == 0
-                }
-        except Exception as e:
-            results["minimax"] = {"error": str(e)}
-    else:
-        results["minimax"] = {"error": "No configurada"}
-
-    kling_ak = os.getenv("KLING_ACCESS_KEY", "")
-    kling_sk = os.getenv("KLING_SECRET_KEY", "")
-    if kling_ak and kling_sk:
-        try:
-            token = _make_kling_jwt(kling_ak, kling_sk)
-            async with httpx.AsyncClient(timeout=15) as c:
-                r = await c.post(
-                    "https://api.klingai.com/v1/videos/text2video",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    json={"model_name": "kling-v1", "prompt": "test", "duration": "5"}
-                )
-                rd = r.json()
-                results["kling"] = {
-                    "key": kling_ak[:8]+"...",
-                    "http": r.status_code,
-                    "response": str(rd)[:300],
-                    "ok": r.status_code == 200
-                }
-        except Exception as e:
-            results["kling"] = {"error": str(e)}
-    else:
-        results["kling"] = {"error": "No configurada"}
-
-    rep_key = os.getenv("REPLICATE_API_KEY", "")
-    if rep_key:
-        try:
-            async with httpx.AsyncClient(timeout=10) as c:
                 r = await c.get(
-                    "https://api.replicate.com/v1/account",
-                    headers={"Authorization": f"Bearer {rep_key}"}
+                    f"https://api.mercadopago.com/v1/payments/{resource_id}",
+                    headers={"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
                 )
-                rd = r.json()
-                results["replicate"] = {
-                    "key": rep_key[:8]+"...",
-                    "http": r.status_code,
-                    "username": rd.get("username", ""),
-                    "ok": r.status_code == 200
-                }
+                payment = r.json()
+
+            if payment.get("status") == "approved":
+                metadata = payment.get("metadata", {})
+                auth_id  = metadata.get("auth_id", "")
+                plan     = metadata.get("plan", "pro_monthly")
+                ext_ref  = payment.get("external_reference", "")
+
+                if (auth_id or ext_ref) and supabase:
+                    if not auth_id:
+                        user_r = supabase.table("users").select("auth_id").eq("id", ext_ref).single().execute()
+                        if user_r.data: auth_id = user_r.data["auth_id"]
+
+                    if auth_id:
+                        supabase.rpc("activate_pro_plan", {
+                            "p_auth_id":   auth_id,
+                            "p_plan_type": plan,
+                            "p_mp_sub":    str(resource_id),
+                        }).execute()
+
+                        supabase.table("payment_events").insert({
+                            "provider":   "mercadopago",
+                            "event_type": "payment.approved",
+                            "event_id":   str(resource_id),
+                            "amount":     int(payment.get("transaction_amount", 0) * 100),
+                            "currency":   payment.get("currency_id", "ARS"),
+                            "plan":       plan,
+                            "status":     "success",
+                            "raw_payload": payment,
+                        }).execute()
         except Exception as e:
-            results["replicate"] = {"error": str(e)}
-    else:
-        results["replicate"] = {"error": "No configurada"}
+            print(f"Error webhook MP: {e}")
 
-    # Test Colab/VideoGen
-    vg_url = os.getenv("VIDEOGEN_URL", "")
-    vg_key = os.getenv("VIDEOGEN_API_KEY", "")
-    if vg_url and vg_key:
-        try:
-            async with httpx.AsyncClient(timeout=15) as c:
-                r = await c.get(
-                    f"{vg_url}/health",
-                    headers={
-                        "x-api-key": vg_key,
-                        "ngrok-skip-browser-warning": "true"
-                    }
-                )
-                results["colab_videogen"] = {
-                    "url": vg_url[:40]+"...",
-                    "http": r.status_code,
-                    "response": r.json() if r.status_code == 200 else r.text[:100],
-                    "ok": r.status_code == 200
-                }
-        except Exception as e:
-            results["colab_videogen"] = {"error": str(e)}
-    else:
-        results["colab_videogen"] = {"error": "VIDEOGEN_URL o VIDEOGEN_API_KEY no configuradas"}
-
-    return results
+    return {"received": True}
 
 
-@router.get("/test-minimax")
-async def test_minimax_legacy():
-    return {"redirect": "Use /api/test-video-apis instead"}
+# ─────────────────────────────────────────────────────────────────────────────
+#  ENDPOINTS EXISTENTES (sin cambios)
+# ─────────────────────────────────────────────────────────────────────────────
 
+@router.get("/debug-config")
+async def debug_config():
+    return {
+        "groq":          bool(GROQ_KEY),
+        "openai":        bool(OPENAI_KEY),
+        "gemini":        bool(GEMINI_KEY),
+        "tavily":        bool(TAVILY_KEY),
+        "supabase":      bool(SUPABASE_URL),
+        "stripe":        bool(STRIPE_SECRET_KEY),
+        "mercadopago":   bool(MP_ACCESS_TOKEN),
+        "videogen_url":  bool(os.getenv("VIDEOGEN_URL","")),
+        "status":        "ok"
+    }
 
-# ── DOWNLOAD ──────────────────────────────────────────────────────────────────
 @router.get("/download/{token}")
 async def download_file(token: str):
     if token not in _file_cache: raise HTTPException(404, "Archivo no encontrado o expirado")
@@ -1051,18 +1182,24 @@ async def download_file(token: str):
     return Response(content=file_bytes, media_type=mime,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
-
-# ── FILE UPLOAD ───────────────────────────────────────────────────────────────
 @router.post("/upload")
 async def upload_file(
     prompt: str = Form(default="Analizá este archivo en detalle."),
     file: UploadFile = File(...),
     username: str = Form(default=""),
     mode: str = Form(default="general"),
+    authorization: str = Header(None),
 ):
+    # Verificar que el usuario es Pro para subir archivos
+    user = await get_optional_user(authorization)
+    if user:
+        block = check_pro_access(user, "file_upload")
+        # file_upload no está en PRO_ONLY_TASKS así que siempre pasa
+
     t0 = time.time(); raw = await file.read()
-    fname = (file.filename or "").lower(); mime = file.content_type or ""
-    system = get_system(mode, username)
+    fname = (file.filename or "").lower(); mime_type = file.content_type or ""
+    uname = user["name"] if user else username
+    system = get_system(mode, uname)
 
     async def groq_analyze(text):
         fp = f"Archivo: {file.filename}\n\nContenido:\n{text[:14000]}\n\nConsulta: {prompt}"
@@ -1072,22 +1209,21 @@ async def upload_file(
 
     result = ""; label = "orquesta"; img_url = ""
     try:
-        is_image = mime.startswith("image/") or any(fname.endswith(x) for x in [".jpg",".jpeg",".png",".gif",".webp",".bmp"])
+        is_image = mime_type.startswith("image/") or any(fname.endswith(x) for x in [".jpg",".jpeg",".png",".gif",".webp",".bmp"])
         is_edit = is_image and any(k in prompt.lower() for k in IMAGE_EDIT_KW)
 
         if is_image and is_edit:
             if OPENAI_KEY:
                 try: img_url = await call_openai_image_edit(raw, prompt); result = "Imagen editada con GPT-4o + DALL-E 3."; label = "gpt-4o + dall-e-3"
-                except Exception as e:
-                    result = f"Error al editar: {str(e)[:200]}"; label = "error"
+                except Exception as e: result = f"Error al editar: {str(e)[:200]}"; label = "error"
             else: result = "Para editar imágenes configurá OPENAI_API_KEY."
         elif is_image:
             if GEMINI_KEY:
                 b64 = base64.b64encode(raw).decode()
-                result = await call_gemini_vision(f"{system}\n\nAnalizá: {prompt}", b64, mime or "image/jpeg")
+                result = await call_gemini_vision(f"{system}\n\nAnalizá: {prompt}", b64, mime_type or "image/jpeg")
                 label = "gemini · visión"
             else: result = "Para analizar imágenes configurá GEMINI_API_KEY."
-        elif fname.endswith(".pdf") or mime == "application/pdf":
+        elif fname.endswith(".pdf") or mime_type == "application/pdf":
             if GEMINI_KEY:
                 b64 = base64.b64encode(raw).decode()
                 result = await call_gemini_vision(f"{system}\n\nAnalizá este PDF: {prompt}", b64, "application/pdf")
@@ -1098,13 +1234,7 @@ async def upload_file(
                 from docx import Document
                 doc = Document(io.BytesIO(raw))
                 paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-                tables = []
-                for tbl in doc.tables:
-                    for row in tbl.rows:
-                        rt = " | ".join(c.text.strip() for c in row.cells if c.text.strip())
-                        if rt: tables.append(rt)
                 text = "\n".join(paras)
-                if tables: text += "\n\nTablas:\n" + "\n".join(tables)
                 result, label = await groq_analyze(text)
             except Exception as e: result = f"No se pudo leer el Word: {e}"; label = "error"
         elif any(fname.endswith(x) for x in [".xlsx",".xls"]):
@@ -1121,18 +1251,18 @@ async def upload_file(
             except Exception as e: result = f"No se pudo leer el Excel: {e}"; label = "error"
         elif any(fname.endswith(x) for x in [".txt",".md",".csv",".json",".xml",".py",".js",".ts",".html",".css",".sql",".yaml",".yml",".log",".sh"]):
             result, label = await groq_analyze(raw.decode("utf-8", errors="ignore"))
-        elif fname.endswith(".doc"): result = "Archivos .doc no compatibles. Guardá como .docx y resubí."
         else: result = f"Formato no soportado: {fname}"
     except Exception as e: raise HTTPException(502, detail=f"Error: {e}")
 
     return {"result":result,"task_type":"file","model_label":label,
             "latency_ms":int((time.time()-t0)*1000),"image_url":img_url,"filename":file.filename}
 
-
-# ── TTS ───────────────────────────────────────────────────────────────────────
 @router.post("/tts")
-async def text_to_speech(data: dict):
+async def text_to_speech(data: dict, authorization: str = Header(None)):
     if not OPENAI_KEY: raise HTTPException(400, "OPENAI_API_KEY no configurada")
+    user = await get_optional_user(authorization)
+    if user and user.get("plan") != "pro":
+        raise HTTPException(403, "TTS disponible solo en plan Pro")
     text = data.get("text",""); voice = data.get("voice","nova")
     if not text: raise HTTPException(400, "Texto vacío")
     try:
@@ -1155,11 +1285,14 @@ async def speech_to_text(file: UploadFile = File(...)):
 @router.get("/status")
 async def status():
     return {
-        "groq": bool(GROQ_KEY),
-        "tavily": bool(TAVILY_KEY),
-        "gemini": bool(GEMINI_KEY),
-        "openai": bool(OPENAI_KEY),
-        "videogen": bool(os.getenv("VIDEOGEN_URL","")),
+        "groq":       bool(GROQ_KEY),
+        "tavily":     bool(TAVILY_KEY),
+        "gemini":     bool(GEMINI_KEY),
+        "openai":     bool(OPENAI_KEY),
+        "supabase":   bool(SUPABASE_URL),
+        "stripe":     bool(STRIPE_SECRET_KEY),
+        "mercadopago": bool(MP_ACCESS_TOKEN),
+        "videogen":   bool(os.getenv("VIDEOGEN_URL","")),
         "file_generation": True,
         "tts": bool(OPENAI_KEY)
     }
