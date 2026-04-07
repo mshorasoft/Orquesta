@@ -370,7 +370,9 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
     # ── 0. ORQUESTA VIDEOGEN (Colab propio) — MÁXIMA PRIORIDAD ──────────────
     if VIDEOGEN_URL and VIDEOGEN_KEY:
         try:
-            async with httpx.AsyncClient(timeout=180) as c:
+            # Calcular frames según duración pedida (por defecto ~5 seg a 8fps = 40 frames)
+            # El backend puede pedir más frames si el usuario lo especifica
+            async with httpx.AsyncClient(timeout=300) as c:  # 5 min timeout para videos largos
                 r = await c.post(
                     f"{VIDEOGEN_URL}/generate",
                     headers={
@@ -378,13 +380,19 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                         "Content-Type": "application/json",
                         "ngrok-skip-browser-warning": "true"
                     },
-                    json={"prompt": enhanced, "num_frames": 16, "num_steps": 25}
+                    json={
+                        "prompt": enhanced,
+                        "num_frames": 40,   # ~5 segundos a 8fps
+                        "num_steps": 20,    # balance calidad/velocidad
+                        "fps": 8
+                    }
                 )
                 if r.status_code == 200:
                     rd = r.json()
                     if rd.get("success"):
                         video_url = f"{VIDEOGEN_URL}{rd.get('download_url','')}"
-                        return video_url, "🎬 Video generado con **Orquesta VideoGen** (motor propio).", "orquesta · videogen"
+                        dur = rd.get('duration_s', '?')
+                        return video_url, f"🎬 Video generado con **Orquesta VideoGen** ({dur}s, motor propio).", "orquesta · videogen"
                     else:
                         errors["videogen"] = rd.get("error", "Error desconocido")[:100]
                 else:
