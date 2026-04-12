@@ -417,6 +417,25 @@ let recorder=null, recChunks=[], recording=false;
 let ttsEnabled=localStorage.getItem('orq_tts')==='1', currentAudio=null;
 let pricingPeriod='monthly', convId=null;
 
+// ── PLAN FREE: solo texto, máximo 20 preguntas ──
+const FREE_LIMIT = 20;
+function getFreeCount(){ return parseInt(localStorage.getItem('orq_free_count')||'0'); }
+function incFreeCount(){ localStorage.setItem('orq_free_count', getFreeCount()+1); }
+function isPro(){ return !!(userProfile?.is_pro); }
+// Funciones que requieren Pro (imagen, video, archivos, voz, búsqueda web)
+function requiresPro(prompt, hasFile){
+  if(hasFile) return true;
+  const p = (prompt||'').toLowerCase();
+  return p.includes('imagen') || p.includes('foto') || p.includes('dibuj') ||
+         p.includes('video') || p.includes('excel') || p.includes('xlsx') ||
+         p.includes('word') || p.includes('docx') || p.includes('pdf') ||
+         p.includes('generar archivo') || p.includes('crear archivo') ||
+         p.includes('voz') || p.includes('audio') || p.includes('hablar') ||
+         p.includes('busca en internet') || p.includes('buscar en internet') ||
+         p.includes('búsqueda web') || p.includes('noticias de hoy') ||
+         p.includes('dall-e') || p.includes('flux') || p.includes('stable diffusion');
+}
+
 // ══════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════
@@ -523,11 +542,12 @@ function updateSidebarUser() {
 function confirmLogout() { if (confirm('¿Cerrar sesión?')) logout(); }
 function updateDailyCounter() {
   const el = document.getElementById('daily-counter');
-  if (!el || !userProfile || userProfile.is_pro) { if(el) el.innerHTML=''; return; }
-  const rem = userProfile.daily_remaining ?? 10;
-  const lim = userProfile.free_daily_limit ?? 10;
-  const cls = rem<=2?'empty':rem<=5?'low':'';
-  el.innerHTML = `<div class="daily-badge ${cls}">${rem}/${lim} hoy</div>`;
+  if (!el) return;
+  if (isPro()) { el.innerHTML = ''; return; }
+  const used = getFreeCount();
+  const rem = Math.max(0, FREE_LIMIT - used);
+  const cls = rem<=3?'empty':rem<=8?'low':'';
+  el.innerHTML = `<div class="daily-badge ${cls}" title="Preguntas gratis restantes">${rem}/${FREE_LIMIT} gratis</div>`;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -554,10 +574,29 @@ async function checkout(provider) {
   const btn = document.getElementById('btn-mp');
   if (btn) { btn.textContent = '⏳ Redirigiendo a MercadoPago...'; btn.disabled = true; }
   try {
+    // Refrescar el token de Supabase antes de enviarlo
+    let token = authToken;
+    if (sb) {
+      const { data: sessionData } = await sb.auth.getSession();
+      if (sessionData?.session?.access_token) {
+        token = sessionData.session.access_token;
+        authToken = token;
+      }
+    }
     const res = await fetch('/api/checkout', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-      body: JSON.stringify({ plan, provider: 'mercadopago' })
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ2bW1sbXhhYmVmZmR5cHB0c3VpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3ODM2NDIsImV4cCI6MjA5MTM1OTY0Mn0.s-SzFrgvWHNV4C0fazcjyEh_hYbcPvwPOM4oXNf_awM'
+      },
+      body: JSON.stringify({
+        plan,
+        provider: 'mercadopago',
+        user_id: currentUser.id,
+        user_email: currentUser.email,
+        access_token: token
+      })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Error al generar el link de pago');
@@ -845,6 +884,28 @@ async function send(){
   const inp=document.getElementById('prompt-input');
   const prompt=inp.value.trim();
   if(!prompt&&!pendingFile)return;
+  // ── CHEQUEO PLAN FREE ──
+  // Pro requerido: funciones avanzadas
+  if(requiresPro(prompt, !!pendingFile) && !isPro()){
+    addMsg('user', prompt||(pendingFile?.name?`Analizar: ${pendingFile.name}`:''), null, null, pendingFile?.name);
+    rmFile(); inp.value=''; inp.style.height='auto';
+    const msg = `🔒 Esta función requiere **Plan Pro**.
+
+**Plan Gratis:** solo conversaciones de texto (hasta 20 preguntas).
+**Plan Pro $9/mes:** imágenes IA, videos IA, Excel, Word, PDF, voz, búsqueda web y mensajes ilimitados.`;
+    addMsg('ai', msg, null, '', null, null, '', '', true);
+    return;
+  }
+  // Límite de 20 preguntas en plan free
+  if(!isPro() && getFreeCount() >= FREE_LIMIT){
+    addMsg('user', prompt, null, null, null);
+    rmFile(); inp.value=''; inp.style.height='auto';
+    const msg = `🔒 Alcanzaste el límite de **${FREE_LIMIT} preguntas** del Plan Gratis.
+
+Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y más.`;
+    addMsg('ai', msg, null, '', null, null, '', '', true);
+    return;
+  }
   if(!convId) await createConversation();
   inp.value=''; inp.style.height='auto';
   loading=true; document.getElementById('send-btn').disabled=true;
@@ -865,28 +926,18 @@ async function send(){
       const res=await fetch('/api/orchestrate',{
         method:'POST',
         headers:{'Content-Type':'application/json',...headers},
-        body:JSON.stringify({prompt,history:activeHistory,mode,username:userProfile?.name||'',tts_enabled:ttsEnabled&&(userProfile?.is_pro??false),conversation_id:convId||''})
+        body:JSON.stringify({prompt,history:activeHistory,mode,username:userProfile?.name||'',tts_enabled:ttsEnabled&&isPro(),conversation_id:convId||''})
       });
       data=await res.json(); if(!res.ok) throw new Error(data.detail||'Error');
     }
+    // Contar pregunta en plan free
+    if(!isPro()) incFreeCount();
     setBadge(data.model_label);
     document.getElementById('typing-msg')?.remove();
-    // Solo mostrar upgrade banner para funciones que realmente lo requieren
-    // No para chat de texto básico (el backend a veces lo manda mal)
-    const needsPro = prompt && (
-      prompt.toLowerCase().includes('imagen') || 
-      prompt.toLowerCase().includes('video') || 
-      prompt.toLowerCase().includes('excel') || 
-      prompt.toLowerCase().includes('pdf') || 
-      prompt.toLowerCase().includes('word') || 
-      prompt.toLowerCase().includes('generar') ||
-      prompt.toLowerCase().includes('crear archivo') ||
-      !!fileToSend
-    );
-    const isUpgrade = needsPro && data.upgrade_banner && data.upgrade_banner.length > 0;
+    const isUpgrade = false; // ya controlamos arriba
     const fileData=data.file_url?{url:data.file_url,type:data.file_type,name:data.file_name}:null;
     addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',isUpgrade);
-    if(!isUpgrade) activeHistory.push({role:'assistant',content:data.result});
+    activeHistory.push({role:'assistant',content:data.result});
     if(typeof data.daily_remaining==='number'&&userProfile){ userProfile.daily_remaining=data.daily_remaining; updateDailyCounter(); }
     if(authToken) setTimeout(loadConversations,500); else { saveLocalHistory(); renderHist(); }
   } catch(err){
