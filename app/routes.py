@@ -50,7 +50,6 @@ FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "10"))
 PRO_ONLY_TASKS = {
     "image_gen", "video_gen", "sound_gen",
     "file_gen_xlsx", "file_gen_docx", "file_gen_pdf",
-    "realtime",   # búsqueda web
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
