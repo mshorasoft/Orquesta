@@ -120,15 +120,22 @@ def check_pro_access(user: dict, task: str) -> dict | None:
     """
     Verifica si el usuario puede ejecutar la tarea.
     Retorna None si puede, o un dict con el mensaje de upgrade si no puede.
+    Plan Free: chat de texto hasta 20 preguntas.
+    Plan Pro: todo ilimitado.
     """
     if not user:
-        # Sin login: solo tareas generales con límite muy bajo
-        return {
-            "blocked": True,
-            "reason": "login_required",
-            "message": "🔐 Iniciá sesión gratis para usar Orquesta AI.",
-            "cta": "Crear cuenta gratis"
-        }
+        # Sin login: puede hacer chat de texto general (el frontend controla el límite de 20)
+        # Solo bloquear funciones Pro
+        if task in PRO_ONLY_TASKS:
+            return {
+                "blocked": True,
+                "reason": "pro_required",
+                "message": "Esta funcion requiere Plan Pro. Plan Gratis: solo texto (hasta 20 preguntas). Plan Pro $9/mes: imagenes, videos, archivos, voz y mensajes ilimitados.",
+                "cta": "Activar Pro",
+                "cta_url": "/pricing"
+            }
+        # Chat de texto sin login: permitido
+        return None
 
     is_pro = (
         user.get("plan") == "pro" and (
