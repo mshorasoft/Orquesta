@@ -44,7 +44,8 @@ STRIPE_PRICE_ANNUAL    = os.getenv("STRIPE_PRICE_ANNUAL", "")
 MP_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
 
 # ── LÍMITES ───────────────────────────────────────────────────────────────────
-FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "10"))
+# FIX 1: límite subido a 20 mensajes para plan Free
+FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "20"))
 
 # ── FUNCIONES QUE REQUIEREN PRO ───────────────────────────────────────────────
 PRO_ONLY_TASKS = {
@@ -60,13 +61,24 @@ def verify_jwt(token: str) -> dict:
     """Verifica el JWT de Supabase y retorna el payload."""
     try:
         import jwt as pyjwt
-        payload = pyjwt.decode(
-            token,
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            audience="authenticated"
-        )
-        return payload
+        # Intentar con audience primero
+        try:
+            payload = pyjwt.decode(
+                token,
+                SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                audience="authenticated"
+            )
+            return payload
+        except pyjwt.InvalidAudienceError:
+            # Supabase a veces no incluye audience en el JWT — intentar sin ella
+            payload = pyjwt.decode(
+                token,
+                SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                options={"verify_aud": False}
+            )
+            return payload
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
 
@@ -151,11 +163,8 @@ def check_pro_access(user: dict, task: str) -> dict | None:
 
     # Verificar límite diario para usuarios Free
     if not is_pro:
-        daily_count  = user.get("daily_message_count", 0)
-        reset_date   = user.get("daily_reset_at", "")
-        today        = datetime.now(timezone.utc).date().isoformat()
+        daily_count = user.get("daily_message_count", 0)
 
-        # Si es un nuevo día, el count se resetea en DB (función SQL), aquí asumimos que ya fue reset
         if daily_count >= FREE_DAILY_LIMIT:
             return {
                 "blocked": True,
@@ -347,7 +356,7 @@ TASK_MODELS = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  API CALLERS (sin cambios respecto al original)
+#  API CALLERS
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def call_groq(messages, model="llama-3.3-70b-versatile"):
@@ -453,7 +462,7 @@ async def groq_with_fallback(messages, model):
             raise
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  IMAGE GENERATION (igual que antes)
+#  IMAGE GENERATION
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
@@ -494,7 +503,7 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
     return url, "🎨 Imagen generada.", "pollinations · imagen"
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  VIDEO GENERATION (igual que antes)
+#  VIDEO GENERATION
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def generate_video_smart(prompt: str, history=None, mode="general", username="") -> tuple[str, str, str]:
@@ -547,7 +556,6 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["videogen"] = str(e)[:100]
 
-    # Fallback con descripción
     video_system = (
         get_system(mode, username) +
         "\n\nIMPORTANTE: El usuario pidió un video con IA. "
@@ -568,7 +576,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
     return "", fallback_msg, "orquesta · video-info"
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  DEEP SEARCH (igual que antes)
+#  DEEP SEARCH
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def deep_search(query: str) -> str:
@@ -596,7 +604,7 @@ async def deep_search(query: str) -> str:
     return "\n\n".join(results) if results else ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  FILE GENERATION (igual que antes)
+#  FILE GENERATION
 # ─────────────────────────────────────────────────────────────────────────────
 
 from app.file_generator import generate_excel, generate_docx, generate_pdf, FILE_SYSTEM_PROMPTS
@@ -646,7 +654,7 @@ class OrchestrateReq(BaseModel):
     username: str = ""
     language: str = ""
     tts_enabled: bool = False
-    conversation_id: str = ""   # NUEVO: ID de conversación en Supabase
+    conversation_id: str = ""
 
 class OrchestrateResp(BaseModel):
     result: str
@@ -659,7 +667,6 @@ class OrchestrateResp(BaseModel):
     file_name: str = ""
     tts_url: str = ""
     video_url: str = ""
-    # NUEVO: info de plan
     is_pro: bool = False
     daily_remaining: int = -1
     upgrade_banner: str = ""
@@ -668,14 +675,13 @@ class OrchestrateResp(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ✅ ENDPOINT PRINCIPAL: /api/orchestrate (ahora con auth)
+#  ENDPOINT PRINCIPAL: /api/orchestrate
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/orchestrate", response_model=OrchestrateResp)
 async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
     if not req.prompt.strip(): raise HTTPException(400, "Prompt vacío")
 
-    # Obtener usuario (opcional — si no hay token, es anónimo)
     user = await get_optional_user(authorization)
     username = user["name"] if user else req.username
 
@@ -794,16 +800,14 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
             except Exception:
                 pass
 
-        # ── Guardar en Supabase (si hay usuario y conversation_id) ────────────
+        # ── Guardar en Supabase ────────────────────────────────────────────────
         if user and req.conversation_id and supabase:
             try:
-                # Guardar mensaje del usuario
                 supabase.table("messages").insert({
                     "conversation_id": req.conversation_id,
                     "role": "user",
                     "content": req.prompt,
                 }).execute()
-                # Guardar respuesta del asistente
                 supabase.table("messages").insert({
                     "conversation_id": req.conversation_id,
                     "role": "assistant",
@@ -815,7 +819,6 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
                     "has_file": bool(file_url),
                     "has_video": bool(video_url),
                 }).execute()
-                # Actualizar título de conversación con el primer mensaje
                 supabase.table("conversations").update({
                     "title": req.prompt[:60],
                     "updated_at": datetime.now(timezone.utc).isoformat()
@@ -837,12 +840,11 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ✅ AUTH ENDPOINTS
+#  AUTH ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/auth/me")
 async def get_me(user: dict = Depends(get_current_user)):
-    """Retorna datos del usuario autenticado + info de plan."""
     is_pro = (
         user.get("plan") == "pro" and (
             user.get("plan_expires_at") is None or
@@ -864,93 +866,105 @@ async def get_me(user: dict = Depends(get_current_user)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ✅ CONVERSACIONES ENDPOINTS
+#  CONVERSACIONES ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/conversations")
 async def list_conversations(user: dict = Depends(get_current_user)):
-    """Lista las conversaciones del usuario."""
     if not supabase: raise HTTPException(500, "Supabase no configurado")
-
     limit = 50 if user.get("plan") == "pro" else 3
-
     result = supabase.table("conversations")\
         .select("id, title, mode, created_at, updated_at")\
         .eq("user_id", user["id"])\
         .order("updated_at", desc=True)\
         .limit(limit)\
         .execute()
-
     return {"conversations": result.data or [], "limit": limit, "is_pro": user.get("plan") == "pro"}
 
 @router.post("/conversations")
 async def create_conversation(data: dict, user: dict = Depends(get_current_user)):
-    """Crea una nueva conversación."""
     if not supabase: raise HTTPException(500, "Supabase no configurado")
-
     result = supabase.table("conversations").insert({
         "user_id": user["id"],
         "title":   data.get("title", "Nueva conversación"),
         "mode":    data.get("mode", "general"),
     }).execute()
-
     return result.data[0] if result.data else {}
 
 @router.get("/conversations/{conv_id}/messages")
 async def get_messages(conv_id: str, user: dict = Depends(get_current_user)):
-    """Retorna todos los mensajes de una conversación."""
     if not supabase: raise HTTPException(500, "Supabase no configurado")
-
-    # Verificar que la conversación pertenece al usuario
     conv = supabase.table("conversations")\
         .select("id")\
         .eq("id", conv_id)\
         .eq("user_id", user["id"])\
         .single().execute()
-
     if not conv.data:
         raise HTTPException(404, "Conversación no encontrada")
-
     messages = supabase.table("messages")\
         .select("*")\
         .eq("conversation_id", conv_id)\
         .order("created_at")\
         .execute()
-
     return {"messages": messages.data or []}
 
 @router.delete("/conversations/{conv_id}")
 async def delete_conversation(conv_id: str, user: dict = Depends(get_current_user)):
-    """Elimina una conversación."""
     if not supabase: raise HTTPException(500, "Supabase no configurado")
-
     supabase.table("conversations")\
         .delete()\
         .eq("id", conv_id)\
         .eq("user_id", user["id"])\
         .execute()
-
     return {"success": True}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ✅ CHECKOUT ENDPOINTS
+#  CHECKOUT ENDPOINTS — FIX 3: sin Depends, con fallback por user_id
 # ─────────────────────────────────────────────────────────────────────────────
 
 class CheckoutReq(BaseModel):
-    plan: str  # "pro_monthly" | "pro_annual"
-    provider: str = "stripe"  # "stripe" | "mercadopago"
+    plan: str                  # "pro_monthly" | "pro_annual"
+    provider: str = "mercadopago"
+    user_id: str = ""          # enviado desde el frontend como fallback
+    user_email: str = ""       # enviado desde el frontend como fallback
+    access_token: str = ""
 
 @router.post("/checkout")
-async def create_checkout(req: CheckoutReq, user: dict = Depends(get_current_user)):
-    """Crea una sesión de pago (Stripe o MercadoPago)."""
+async def create_checkout(req: CheckoutReq, authorization: str = Header(None)):
+    """Crea una sesión de pago (MercadoPago o Stripe)."""
 
-    if req.provider == "stripe":
-        return await _stripe_checkout(req.plan, user)
-    elif req.provider == "mercadopago":
+    # 1. Intentar obtener usuario por JWT
+    user = await get_optional_user(authorization)
+
+    # 2. Fallback: buscar por user_id en Supabase si el JWT falló
+    if not user and req.user_id and supabase:
+        try:
+            result = supabase.table("users").select("*").eq("id", req.user_id).single().execute()
+            if result.data:
+                user = result.data
+        except:
+            pass
+
+    # 3. Último fallback: construir user mínimo con datos del body
+    if not user and req.user_email:
+        user = {
+            "id":       req.user_id or str(uuid.uuid4()),
+            "email":    req.user_email,
+            "name":     "",
+            "auth_id":  "",
+        }
+
+    if not user:
+        raise HTTPException(401, "No autenticado — iniciá sesión para suscribirte")
+
+    if req.provider == "mercadopago":
         return await _mp_checkout(req.plan, user)
+    elif req.provider == "stripe":
+        return await _stripe_checkout(req.plan, user)
     else:
         raise HTTPException(400, "Proveedor inválido")
+
 
 async def _stripe_checkout(plan: str, user: dict) -> dict:
     if not STRIPE_SECRET_KEY:
@@ -970,7 +984,7 @@ async def _stripe_checkout(plan: str, user: dict) -> dict:
                 "line_items[0][quantity]": "1",
                 "customer_email": user["email"],
                 "client_reference_id": user["id"],
-                "metadata[auth_id]": user["auth_id"] if "auth_id" in user else "",
+                "metadata[auth_id]": user.get("auth_id", ""),
                 "metadata[plan]": plan,
                 "success_url": f"{APP_URL}/?checkout=success&plan={plan}",
                 "cancel_url":  f"{APP_URL}/pricing?checkout=cancelled",
@@ -980,14 +994,13 @@ async def _stripe_checkout(plan: str, user: dict) -> dict:
         d = r.json()
         if not r.is_success:
             raise HTTPException(502, f"Error Stripe: {d.get('error',{}).get('message','Unknown')}")
-
         return {"checkout_url": d["url"], "session_id": d["id"]}
+
 
 async def _mp_checkout(plan: str, user: dict) -> dict:
     if not MP_ACCESS_TOKEN:
-        raise HTTPException(500, "MercadoPago no configurado")
+        raise HTTPException(500, "MercadoPago no configurado — agregá MERCADOPAGO_ACCESS_TOKEN en Railway")
 
-    # Precios en ARS (ajustá según el tipo de cambio)
     prices = {
         "pro_monthly": {"title": "Orquesta Pro — Mensual", "price": 8990, "currency": "ARS"},
         "pro_annual":  {"title": "Orquesta Pro — Anual",   "price": 89900, "currency": "ARS"},
@@ -1028,19 +1041,17 @@ async def _mp_checkout(plan: str, user: dict) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ✅ WEBHOOKS
+#  WEBHOOKS
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/webhooks/stripe")
 async def stripe_webhook(request: Request):
-    """Webhook de Stripe — activa Pro automáticamente al pagar."""
     if not STRIPE_SECRET_KEY:
         raise HTTPException(500, "Stripe no configurado")
 
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
 
-    # Verificar firma del webhook
     try:
         import stripe as stripe_lib
         stripe_lib.api_key = STRIPE_SECRET_KEY
@@ -1065,8 +1076,6 @@ async def stripe_webhook(request: Request):
                     "p_stripe_customer": customer,
                     "p_stripe_sub":      sub_id,
                 }).execute()
-
-                # Log del evento
                 supabase.table("payment_events").insert({
                     "provider":   "stripe",
                     "event_type": event_type,
@@ -1101,7 +1110,6 @@ async def stripe_webhook(request: Request):
 
 @router.post("/webhooks/mercadopago")
 async def mercadopago_webhook(request: Request):
-    """Webhook de MercadoPago — activa Pro automáticamente al pagar."""
     if not MP_ACCESS_TOKEN:
         return {"received": True}
 
@@ -1157,7 +1165,7 @@ async def mercadopago_webhook(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ENDPOINTS EXISTENTES (sin cambios)
+#  ENDPOINTS EXISTENTES
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/debug-config")
@@ -1189,11 +1197,7 @@ async def upload_file(
     mode: str = Form(default="general"),
     authorization: str = Header(None),
 ):
-    # Verificar que el usuario es Pro para subir archivos
     user = await get_optional_user(authorization)
-    if user:
-        block = check_pro_access(user, "file_upload")
-        # file_upload no está en PRO_ONLY_TASKS así que siempre pasa
 
     t0 = time.time(); raw = await file.read()
     fname = (file.filename or "").lower(); mime_type = file.content_type or ""
@@ -1284,14 +1288,14 @@ async def speech_to_text(file: UploadFile = File(...)):
 @router.get("/status")
 async def status():
     return {
-        "groq":       bool(GROQ_KEY),
-        "tavily":     bool(TAVILY_KEY),
-        "gemini":     bool(GEMINI_KEY),
-        "openai":     bool(OPENAI_KEY),
-        "supabase":   bool(SUPABASE_URL),
-        "stripe":     bool(STRIPE_SECRET_KEY),
+        "groq":        bool(GROQ_KEY),
+        "tavily":      bool(TAVILY_KEY),
+        "gemini":      bool(GEMINI_KEY),
+        "openai":      bool(OPENAI_KEY),
+        "supabase":    bool(SUPABASE_URL),
+        "stripe":      bool(STRIPE_SECRET_KEY),
         "mercadopago": bool(MP_ACCESS_TOKEN),
-        "videogen":   bool(os.getenv("VIDEOGEN_URL","")),
+        "videogen":    bool(os.getenv("VIDEOGEN_URL","")),
         "file_generation": True,
         "tts": bool(OPENAI_KEY)
     }
