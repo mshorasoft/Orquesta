@@ -1009,8 +1009,8 @@ async def _mp_checkout(plan: str, user: dict) -> dict:
         raise HTTPException(500, "MercadoPago no configurado — agregá MERCADOPAGO_ACCESS_TOKEN en Railway")
 
     prices = {
-        "pro_monthly": {"title": "Orquesta Pro — Mensual", "price": 8990, "currency": "ARS"},
-        "pro_annual":  {"title": "Orquesta Pro — Anual",   "price": 89900, "currency": "ARS"},
+        "pro_monthly": {"title": "Orquesta Pro — Mensual", "price": 9, "currency": "USD"},
+        "pro_annual":  {"title": "Orquesta Pro — Anual",   "price": 95, "currency": "USD"},
     }
     p = prices.get(plan, prices["pro_monthly"])
 
