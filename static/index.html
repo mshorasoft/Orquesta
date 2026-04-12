@@ -514,7 +514,7 @@ function updateSidebarUser() {
     area.innerHTML = `<button class="sb-login-btn" onclick="showLogin()">🔐 Iniciar sesión</button>`;
     upgradeArea.innerHTML = ''; return;
   }
-  const name = userProfile?.name || currentUser.email?.split('@')[0] || 'Usuario';
+  const name = userProfile?.name || currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || currentUser.email?.split('@')[0] || 'Usuario';
   const avatar = userProfile?.avatar_url || currentUser.user_metadata?.avatar_url || '';
   const isPro = userProfile?.is_pro;
   const planTag = isPro ? '<span class="sb-plan-tag pro">PRO ⚡</span>' : '<span class="sb-plan-tag free">FREE</span>';
