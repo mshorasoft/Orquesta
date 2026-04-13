@@ -946,7 +946,7 @@ async function send(){
   if(authToken && !userProfile?.is_pro) await loadUserProfile();
   // ── CHEQUEO PLAN FREE ──
   // Pro requerido: funciones avanzadas
-  if(requiresPro(prompt, !!pendingFile) && !isPro()){
+  if(requiresPro(prompt, !!pendingFile) && !(isPro() || userProfile?.is_pro || userProfile?.plan === 'pro')){
     addMsg('user', prompt||(pendingFile?.name?`Analizar: ${pendingFile.name}`:''), null, null, pendingFile?.name);
     rmFile(); inp.value=''; inp.style.height='auto';
     const msg = `🔒 Esta función requiere **Plan Pro**.
@@ -957,7 +957,7 @@ async function send(){
     return;
   }
   // Límite de 20 preguntas en plan free
-  if(!isPro() && getFreeCount() >= FREE_LIMIT){
+  if(!(isPro() || userProfile?.is_pro || userProfile?.plan === 'pro') && getFreeCount() >= FREE_LIMIT){
     addMsg('user', prompt, null, null, null);
     rmFile(); inp.value=''; inp.style.height='auto';
     const msg = `🔒 Alcanzaste el límite de **${FREE_LIMIT} preguntas** del Plan Gratis.
@@ -992,25 +992,35 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
       data=await res.json(); if(!res.ok) throw new Error(data.detail||'Error');
     }
     // Contar pregunta en plan free
-    if(!isPro()) incFreeCount();
+    if(!(isPro() || userProfile?.is_pro || userProfile?.plan === 'pro')) incFreeCount();
     setBadge(data.model_label);
     document.getElementById('typing-msg')?.remove();
     // Detectar si el backend bloqueó la respuesta (usuario free bloqueado por el servidor)
     const fileData=data.file_url?{url:data.file_url,type:data.file_type,name:data.file_name}:null;
     // Si el usuario es Pro (verificado directo en Supabase), ignorar cualquier bloqueo del backend
-    const userIsPro = isPro() || userProfile?.is_pro || userProfile?.plan === 'pro';
-    const blockedTexts = ['esta funcion requiere', 'iniciá sesión', 'inicia sesion', 'suscri', 'no tenés acceso'];
-    const resultIsBlock = !userIsPro && blockedTexts.some(t => (data.result||'').toLowerCase().includes(t)) && (data.latency_ms === 0 || data.latency_ms < 5);
-    const serverBlocked = !userIsPro && ((data.upgrade_banner && data.upgrade_banner.length > 0) || resultIsBlock);
+    // Si el usuario es Pro (verificado en Supabase), mostrar siempre la respuesta
+    const userIsPro = !!(userProfile?.is_pro || userProfile?.plan === 'pro');
+    console.log('userIsPro:', userIsPro, '| plan:', userProfile?.plan, '| is_pro:', userProfile?.is_pro);
     const isUpgrade = false;
-    if(serverBlocked){
-      const bannerMsg = currentUser
-        ? '🔒 Tu **Plan Gratis** incluye solo chat de texto. Activá Pro para imágenes, videos, archivos y más.'
-        : '🔒 Iniciá sesión y activá Pro para acceder a esta función.';
-      addMsg('ai', bannerMsg, null, '', null, null, '', '', true);
-    } else {
-      addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',isUpgrade);
+    const fileData2 = fileData; // alias para claridad
+    if(userIsPro){
+      // Usuario Pro: mostrar respuesta siempre, sin importar lo que diga el backend
+      addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
       activeHistory.push({role:'assistant',content:data.result});
+    } else {
+      // Usuario Free: verificar si el backend bloqueó
+      const blockedTexts = ['esta funcion requiere','plan pro','iniciá sesión','inicia sesion','suscri'];
+      const serverBlocked = (data.upgrade_banner && data.upgrade_banner.length > 0) ||
+        (blockedTexts.some(t => (data.result||'').toLowerCase().includes(t)) && data.latency_ms < 10);
+      if(serverBlocked){
+        const bannerMsg = currentUser
+          ? '🔒 Esta función requiere **Plan Pro**. Activalo para imágenes, videos, archivos y más.'
+          : '🔒 Iniciá sesión y activá Pro para acceder a esta función.';
+        addMsg('ai', bannerMsg, null, '', null, null, '', '', true);
+      } else {
+        addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
+        activeHistory.push({role:'assistant',content:data.result});
+      }
     }
     if(typeof data.daily_remaining==='number'&&userProfile){ userProfile.daily_remaining=data.daily_remaining; updateDailyCounter(); }
     if(authToken) setTimeout(loadConversations,500); else { saveLocalHistory(); renderHist(); }
