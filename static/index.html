@@ -1004,47 +1004,18 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     if(!(isPro() || userProfile?.is_pro || userProfile?.plan === 'pro')) incFreeCount();
     setBadge(data.model_label);
     document.getElementById('typing-msg')?.remove();
-    // Detectar si el backend bloqueó la respuesta (usuario free bloqueado por el servidor)
     const fileData=data.file_url?{url:data.file_url,type:data.file_type,name:data.file_name}:null;
-    // Si el usuario es Pro (verificado directo en Supabase), ignorar cualquier bloqueo del backend
-    // Usar la misma variable que se calculó al inicio de send()
     const userIsPro = _userIsPro;
-    console.log('userIsPro:', userIsPro, '| plan:', userProfile?.plan, '| is_pro:', userProfile?.is_pro);
-    const isUpgrade = false;
-    const fileData2 = fileData; // alias para claridad
     if(userIsPro){
-      // Usuario Pro: si el backend bloqueó por plan, ignorar y mostrar mensaje de espera
-      const backendBlocked = data.latency_ms < 10 && data.upgrade_banner && data.upgrade_banner.length > 0;
-      if(backendBlocked){
-        // Backend bloqueó pero el usuario es Pro — reintentar sin esperar plan del backend
-        const retryRes = await fetch('/api/orchestrate',{
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({prompt,history:activeHistory,mode,username:userProfile?.name||'',tts_enabled:false,conversation_id:'',user_plan:'pro',user_id:userProfile?.id||currentUser?.id||''})
-        });
-        const retryData = await retryRes.json();
-        if(retryRes.ok && retryData.result){
-          const fd2=retryData.file_url?{url:retryData.file_url,type:retryData.file_type,name:retryData.file_name}:null;
-          addMsg('ai',retryData.result,{label:retryData.model_label,ms:retryData.latency_ms},retryData.image_url||'',null,fd2,retryData.tts_url||'',retryData.video_url||'',false);
-          activeHistory.push({role:'assistant',content:retryData.result});
-        } else {
-          addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
-          activeHistory.push({role:'assistant',content:data.result});
-        }
-      } else {
-        addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
-        activeHistory.push({role:'assistant',content:data.result});
-      }
+      // Pro: mostrar siempre la respuesta del backend sin ningún filtro
+      addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
+      activeHistory.push({role:'assistant',content:data.result});
     } else {
-      // Usuario Free: verificar si el backend bloqueó
-      const blockedTexts = ['esta funcion requiere','plan pro','iniciá sesión','inicia sesion','suscri'];
+      // Free: mostrar upgrade banner si el backend lo indica
       const serverBlocked = (data.upgrade_banner && data.upgrade_banner.length > 0) ||
-        (blockedTexts.some(t => (data.result||'').toLowerCase().includes(t)) && data.latency_ms < 10);
+        (data.latency_ms < 10 && ['esta funcion requiere','plan pro'].some(t=>(data.result||'').toLowerCase().includes(t)));
       if(serverBlocked){
-        const bannerMsg = currentUser
-          ? '🔒 Esta función requiere **Plan Pro**. Activalo para imágenes, videos, archivos y más.'
-          : '🔒 Iniciá sesión y activá Pro para acceder a esta función.';
-        addMsg('ai', bannerMsg, null, '', null, null, '', '', true);
+        addMsg('ai','🔒 Esta función requiere **Plan Pro**.',null,'',null,null,'','',true);
       } else {
         addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
         activeHistory.push({role:'assistant',content:data.result});
