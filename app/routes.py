@@ -27,6 +27,23 @@ def _make_kling_jwt(access_key: str, secret_key: str) -> str:
 
 router = APIRouter()
 
+def parse_expiry(expires_at: str) -> datetime:
+    """Parsea plan_expires_at tolerando formatos +00 y +00:00 de Postgres."""
+    if not expires_at:
+        return datetime.max.replace(tzinfo=timezone.utc)
+    # Normalizar: "+00" → "+00:00", quitar microsegundos si hay problema
+    s = expires_at.replace("Z", "+00:00")
+    # Postgres puede devolver "+00" sin los ":00"
+    import re as _re
+    s = _re.sub(r'\+(\d{2})$', r'+\1:00', s)
+    s = _re.sub(r'-(\d{2})$', r'-\1:00', s)
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        # Último fallback: asumir UTC
+        return datetime.fromisoformat(s.split('+')[0].split('-')[0] + '+00:00')
+
+
 # ── API KEYS ─────────────────────────────────────────────────────────────────
 GROQ_KEY   = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -140,7 +157,7 @@ def check_pro_access(user: dict, task: str) -> dict | None:
     is_pro = (
         user.get("plan") == "pro" and (
             user.get("plan_expires_at") is None or
-            datetime.fromisoformat(user["plan_expires_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
+            parse_expiry(user["plan_expires_at"]) > datetime.now(timezone.utc)
         )
     )
 
@@ -855,7 +872,7 @@ async def get_me(user: dict = Depends(get_current_user)):
     is_pro = (
         user.get("plan") == "pro" and (
             user.get("plan_expires_at") is None or
-            datetime.fromisoformat(user["plan_expires_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
+            parse_expiry(user["plan_expires_at"]) > datetime.now(timezone.utc)
         )
     )
     return {
