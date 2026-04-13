@@ -533,13 +533,24 @@ function updateSidebarUser() {
   const planTag = isPro ? '<span class="sb-plan-tag pro">PRO ⚡</span>' : '<span class="sb-plan-tag free">FREE</span>';
   const avatarHtml = avatar ? `<img src="${avatar}" alt="${name}">` : name[0].toUpperCase();
   area.innerHTML = `<div class="sb-user" onclick="confirmLogout()"><div class="sb-avatar">${avatarHtml}</div><div class="sb-userinfo"><div class="sb-username">${name}</div>${planTag}</div></div>`;
-  upgradeArea.innerHTML = !isPro ? `<div class="sb-upgrade" onclick="showPricing()"><div class="sb-upgrade-title">⚡ Activá Pro</div><div class="sb-upgrade-sub">Imágenes, videos, archivos — $9/mes</div></div>` : '';
+  upgradeArea.innerHTML = !isPro ? `<div class="sb-upgrade" onclick="showPricing()"><div class="sb-upgrade-title">⚡ Activá Pro</div><div class="sb-upgrade-sub">Imágenes, videos, archivos — $9/mes</div></div><div class="sb-upgrade" style="margin-top:4px;background:rgba(29,158,117,0.08);border-color:rgba(29,158,117,0.2);" onclick="refreshPlan()"><div class="sb-upgrade-title" style="color:var(--em)">🔄 Ya pagué — Verificar</div><div class="sb-upgrade-sub">Actualizá tu estado Pro</div></div>` : '';
   const wn = document.getElementById('wname');
   if (wn) wn.textContent = `, ${name.split(' ')[0]}`;
   window._userAvatarUrl = avatar;
   window._userName = name;
 }
 function confirmLogout() { if (confirm('¿Cerrar sesión?')) logout(); }
+async function refreshPlan() {
+  if (!authToken) return;
+  await loadUserProfile();
+  updateSidebarUser();
+  updateDailyCounter();
+  if (userProfile?.is_pro) {
+    showToast('✅ Plan Pro activo. ¡Bienvenido!', 'info', 4000);
+  } else {
+    showToast('Plan Free activo. Si acabás de pagar, esperá unos minutos y reintentá.', 'warn', 5000);
+  }
+}
 function updateDailyCounter() {
   const el = document.getElementById('daily-counter');
   if (!el) return;
@@ -884,6 +895,8 @@ async function send(){
   const inp=document.getElementById('prompt-input');
   const prompt=inp.value.trim();
   if(!prompt&&!pendingFile)return;
+  // Refrescar perfil si hay token (por si el plan cambió)
+  if(authToken && !userProfile?.is_pro) await loadUserProfile();
   // ── CHEQUEO PLAN FREE ──
   // Pro requerido: funciones avanzadas
   if(requiresPro(prompt, !!pendingFile) && !isPro()){
@@ -917,7 +930,10 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
   try{
     let data;
     const headers={};
-    if(authToken) headers['Authorization']=`Bearer ${authToken}`;
+    // Usuario FREE con texto: enviar sin token para evitar bloqueo por plan del backend
+    // Usuario PRO o con archivo: enviar con token
+    const sendWithAuth = isPro() || !!fileToSend;
+    if(authToken && sendWithAuth) headers['Authorization']=`Bearer ${authToken}`;
     if(fileToSend){
       const fd=new FormData(); fd.append('file',fileToSend); fd.append('prompt',prompt||'Analizá este archivo.'); fd.append('username',userProfile?.name||''); fd.append('mode',mode);
       const res=await fetch('/api/upload',{method:'POST',headers,body:fd});
@@ -934,10 +950,25 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     if(!isPro()) incFreeCount();
     setBadge(data.model_label);
     document.getElementById('typing-msg')?.remove();
-    const isUpgrade = false; // ya controlamos arriba
+    // Detectar si el backend bloqueó la respuesta (usuario free bloqueado por el servidor)
+    // Detectar bloqueo del backend: por upgrade_banner O por texto de bloqueo en result
+    const blockedTexts = ['iniciá sesión', 'inicia sesion', 'upgrade', 'plan pro', 'suscri', 'no tenés acceso', 'no tienes acceso'];
+    const resultIsBlock = blockedTexts.some(t => (data.result||'').toLowerCase().includes(t)) && (data.latency_ms === 0 || data.latency_ms < 5);
+    const serverBlocked = (data.upgrade_banner && data.upgrade_banner.length > 0) || resultIsBlock;
+    // Para texto simple con usuario logueado: ignorar el bloqueo del backend y mostrar respuesta
+    // Para funciones Pro: mostrar upgrade (ya controlado arriba, no debería llegar acá)
+    const isUpgrade = false;
     const fileData=data.file_url?{url:data.file_url,type:data.file_type,name:data.file_name}:null;
-    addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',isUpgrade);
-    activeHistory.push({role:'assistant',content:data.result});
+    // Si el backend bloqueó pero el usuario está logueado y es texto simple → mostrar upgrade banner
+    if(serverBlocked && !isPro()){
+      const bannerMsg = currentUser
+        ? '🔒 Tu **Plan Gratis** incluye solo chat de texto. Activá Pro para imágenes, videos, archivos y más.'
+        : '🔒 Iniciá sesión y activá Pro para acceder a esta función.';
+      addMsg('ai', bannerMsg, null, '', null, null, '', '', true);
+    } else {
+      addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',isUpgrade);
+      activeHistory.push({role:'assistant',content:data.result});
+    }
     if(typeof data.daily_remaining==='number'&&userProfile){ userProfile.daily_remaining=data.daily_remaining; updateDailyCounter(); }
     if(authToken) setTimeout(loadConversations,500); else { saveLocalHistory(); renderHist(); }
   } catch(err){
