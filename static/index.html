@@ -495,49 +495,57 @@ async function logout() {
   showLogin();
 }
 async function loadUserProfile() {
-  if (!authToken) return;
+  if (!authToken || !sb) return;
+  // Usar Supabase SDK con el token del usuario — bypasea RLS correctamente
+  try {
+    // Setear la sesión con el token actual para que el SDK use RLS del usuario
+    const sbUser = supabase.createClient(
+      'https://fvmmlmxabeffdypptsui.supabase.co',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ2bW1sbXhhYmVmZmR5cHB0c3VpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3ODM2NDIsImV4cCI6MjA5MTM1OTY0Mn0.s-SzFrgvWHNV4C0fazcjyEh_hYbcPvwPOM4oXNf_awM',
+      { global: { headers: { Authorization: `Bearer ${authToken}` } } }
+    );
+    const { data, error } = await sbUser
+      .from('users')
+      .select('id, name, email, avatar_url, plan, plan_expires_at, daily_message_count')
+      .eq('auth_id', currentUser.id)
+      .single();
+    if (data && !error) {
+      const exp = data.plan_expires_at ? new Date(data.plan_expires_at) : null;
+      const isPlanValid = data.plan === 'pro' && (!exp || exp > new Date());
+      userProfile = {
+        id: data.id,
+        name: data.name || currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0],
+        email: data.email || currentUser.email,
+        avatar_url: data.avatar_url || currentUser.user_metadata?.avatar_url || '',
+        plan: data.plan,
+        is_pro: isPlanValid,
+        daily_message_count: data.daily_message_count || 0,
+        daily_remaining: isPlanValid ? -1 : Math.max(0, FREE_LIMIT - (data.daily_message_count || 0)),
+        free_daily_limit: FREE_LIMIT,
+      };
+      console.log('✅ Perfil cargado de Supabase:', data.plan, '| is_pro:', isPlanValid);
+      return;
+    }
+  } catch(e) { console.warn('Supabase SDK:', e); }
+  // Fallback: intentar /api/auth/me
   try {
     const res = await fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${authToken}` } });
-    if (res.ok) {
-      userProfile = await res.json();
-    }
-  } catch(e) { console.warn('Perfil API:', e); }
-  // Si el backend dice free pero Supabase dice pro → consultar directo a Supabase
-  if ((!userProfile || !userProfile.is_pro) && sb && currentUser) {
-    try {
-      const { data, error } = await sb
-        .from('users')
-        .select('id, name, email, avatar_url, plan, plan_expires_at, daily_message_count')
-        .eq('auth_id', currentUser.id)
-        .single();
-      if (data && !error) {
-        // Verificar si plan_expires_at es válido
-        let isPlanValid = false;
-        if (data.plan === 'pro') {
-          if (!data.plan_expires_at) {
-            isPlanValid = true;
-          } else {
-            try {
-              const exp = new Date(data.plan_expires_at);
-              isPlanValid = exp > new Date();
-            } catch(e) { isPlanValid = false; }
-          }
-        }
-        // Construir userProfile con datos directos de Supabase
-        userProfile = {
-          ...userProfile,
-          id: data.id,
-          name: data.name,
-          email: data.email,
-          avatar_url: data.avatar_url,
-          plan: data.plan,
-          is_pro: data.plan === 'pro' && isPlanValid,
-          daily_message_count: data.daily_message_count || 0,
-          daily_remaining: data.plan === 'pro' ? -1 : Math.max(0, FREE_LIMIT - (data.daily_message_count || 0)),
-        };
-        console.log('Plan leído directo de Supabase:', data.plan, '→ is_pro:', userProfile.is_pro);
-      }
-    } catch(e) { console.warn('Supabase directo:', e); }
+    if (res.ok) { userProfile = await res.json(); }
+  } catch(e) { console.warn('API /auth/me:', e); }
+  // Último fallback: construir perfil básico desde el token de Google
+  if (!userProfile) {
+    const meta = currentUser.user_metadata || {};
+    userProfile = {
+      id: currentUser.id,
+      name: meta.full_name || meta.name || currentUser.email?.split('@')[0] || 'Usuario',
+      email: currentUser.email || '',
+      avatar_url: meta.avatar_url || meta.picture || '',
+      plan: 'free',
+      is_pro: false,
+      daily_remaining: FREE_LIMIT,
+      free_daily_limit: FREE_LIMIT,
+    };
+    console.warn('⚠️ Usando perfil básico desde token Google');
   }
 }
 
