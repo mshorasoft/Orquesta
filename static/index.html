@@ -943,10 +943,12 @@ async function send(){
   const prompt=inp.value.trim();
   if(!prompt&&!pendingFile)return;
   // Refrescar perfil si hay token (por si el plan cambió)
-  if(authToken && !userProfile?.is_pro) await loadUserProfile();
+  if(authToken) await loadUserProfile();
   // ── CHEQUEO PLAN FREE ──
+  const _userIsPro = !!(userProfile?.is_pro || userProfile?.plan === 'pro');
+  console.log('send() → plan:', userProfile?.plan, '| is_pro:', userProfile?.is_pro, '| _userIsPro:', _userIsPro, '| requiresPro:', requiresPro(prompt, !!pendingFile));
   // Pro requerido: funciones avanzadas
-  if(requiresPro(prompt, !!pendingFile) && !(isPro() || userProfile?.is_pro || userProfile?.plan === 'pro')){
+  if(requiresPro(prompt, !!pendingFile) && !_userIsPro){
     addMsg('user', prompt||(pendingFile?.name?`Analizar: ${pendingFile.name}`:''), null, null, pendingFile?.name);
     rmFile(); inp.value=''; inp.style.height='auto';
     const msg = `🔒 Esta función requiere **Plan Pro**.
