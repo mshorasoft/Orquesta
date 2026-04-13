@@ -969,10 +969,8 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
   try{
     let data;
     const headers={};
-    // Usuario FREE con texto: enviar sin token para evitar bloqueo por plan del backend
-    // Usuario PRO o con archivo: enviar con token
-    const sendWithAuth = isPro() || !!fileToSend;
-    if(authToken && sendWithAuth) headers['Authorization']=`Bearer ${authToken}`;
+    // Siempre enviar token si está disponible — el backend lo usa para identificar el plan
+    if(authToken) headers['Authorization']=`Bearer ${authToken}`;
     if(fileToSend){
       const fd=new FormData(); fd.append('file',fileToSend); fd.append('prompt',prompt||'Analizá este archivo.'); fd.append('username',userProfile?.name||''); fd.append('mode',mode);
       const res=await fetch('/api/upload',{method:'POST',headers,body:fd});
