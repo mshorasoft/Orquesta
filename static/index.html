@@ -938,9 +938,11 @@ async function send(){
   const inp=document.getElementById('prompt-input');
   const prompt=inp.value.trim();
   if(!prompt&&!pendingFile)return;
+  // Asegurar que el perfil esté cargado antes de cualquier chequeo
+  if(authToken && !userProfile) await loadUserProfile();
   // ── CHEQUEO PLAN FREE ──
   const _userIsPro = !!(userProfile?.is_pro || userProfile?.plan === 'pro');
-  // Pro requerido: funciones avanzadas
+  // Pro requerido: funciones avanzadas — solo bloquear si confirma que NO es pro
   if(requiresPro(prompt, !!pendingFile) && !_userIsPro){
     addMsg('user', prompt||(pendingFile?.name?`Analizar: ${pendingFile.name}`:''), null, null, pendingFile?.name);
     rmFile(); inp.value=''; inp.style.height='auto';
@@ -1002,8 +1004,8 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     // Detectar si el backend bloqueó la respuesta (usuario free bloqueado por el servidor)
     const fileData=data.file_url?{url:data.file_url,type:data.file_type,name:data.file_name}:null;
     // Si el usuario es Pro (verificado directo en Supabase), ignorar cualquier bloqueo del backend
-    // Si el usuario es Pro (verificado en Supabase), mostrar siempre la respuesta
-    const userIsPro = !!(userProfile?.is_pro || userProfile?.plan === 'pro');
+    // Usar la misma variable que se calculó al inicio de send()
+    const userIsPro = _userIsPro;
     console.log('userIsPro:', userIsPro, '| plan:', userProfile?.plan, '| is_pro:', userProfile?.is_pro);
     const isUpgrade = false;
     const fileData2 = fileData; // alias para claridad
