@@ -667,28 +667,30 @@ async function checkout(provider) {
 //  CONVERSACIONES
 // ══════════════════════════════════════════════════════════════
 async function loadConversations() {
+  // Si no hay token o ya sabemos que la API da 401, usar localStorage
   if (!authToken) {
     try { sessions=JSON.parse(localStorage.getItem('orq_sessions')||'[]'); } catch(e){sessions=[];}
     renderHist(); return;
   }
+  // Solo intentar una vez — si da 401, usar localStorage y no reintentar
   try {
     const res = await fetch('/api/conversations', { headers:{'Authorization':`Bearer ${authToken}`} });
     if (res.ok) {
       const data = await res.json();
       sessions = (data.conversations||[]).map(c=>({id:c.id,title:c.title,ts:new Date(c.updated_at).getTime(),supabase:true}));
-      renderHist();
+    } else {
+      // 401 u otro error: usar localStorage silenciosamente
+      try { sessions=JSON.parse(localStorage.getItem('orq_sessions')||'[]'); } catch(e){sessions=[];}
     }
-  } catch(e) { console.warn('Conversaciones:', e); }
+  } catch(e) {
+    try { sessions=JSON.parse(localStorage.getItem('orq_sessions')||'[]'); } catch(e2){sessions=[];}
+  }
+  renderHist();
 }
 async function createConversation() {
-  if (!authToken) { convId='s_'+Date.now(); return convId; }
-  try {
-    const res = await fetch('/api/conversations', {
-      method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${authToken}`},
-      body: JSON.stringify({title:'Nueva conversación', mode})
-    });
-    if (res.ok) { const data=await res.json(); convId=data.id; return convId; }
-  } catch(e) { convId='s_'+Date.now(); return convId; }
+  // Usar siempre ID local — el backend de conversaciones da 401
+  convId = 's_'+Date.now();
+  return convId;
 }
 async function loadSessionMessages(id) {
   if (!authToken||!id||id.startsWith('s_')) {
@@ -980,7 +982,16 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
       const res=await fetch('/api/orchestrate',{
         method:'POST',
         headers:{'Content-Type':'application/json',...headers},
-        body:JSON.stringify({prompt,history:activeHistory,mode,username:userProfile?.name||'',tts_enabled:ttsEnabled&&isPro(),conversation_id:convId||''})
+        body:JSON.stringify({
+          prompt,
+          history:activeHistory,
+          mode,
+          username:userProfile?.name||'',
+          tts_enabled:ttsEnabled&&_userIsPro,
+          conversation_id:convId||'',
+          user_plan: userProfile?.plan||'free',
+          user_id: userProfile?.id||currentUser?.id||''
+        })
       });
       data=await res.json(); if(!res.ok) throw new Error(data.detail||'Error');
     }
@@ -1016,7 +1027,7 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
       }
     }
     if(typeof data.daily_remaining==='number'&&userProfile){ userProfile.daily_remaining=data.daily_remaining; updateDailyCounter(); }
-    if(authToken) setTimeout(loadConversations,500); else { saveLocalHistory(); renderHist(); }
+    saveLocalHistory(); renderHist();
   } catch(err){
     document.getElementById('typing-msg')?.remove();
     addMsg('ai',`❌ Error: ${err.message}`);
