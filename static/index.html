@@ -988,16 +988,14 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     setBadge(data.model_label);
     document.getElementById('typing-msg')?.remove();
     // Detectar si el backend bloqueó la respuesta (usuario free bloqueado por el servidor)
-    // Detectar bloqueo del backend: por upgrade_banner O por texto de bloqueo en result
-    const blockedTexts = ['iniciá sesión', 'inicia sesion', 'upgrade', 'plan pro', 'suscri', 'no tenés acceso', 'no tienes acceso'];
-    const resultIsBlock = blockedTexts.some(t => (data.result||'').toLowerCase().includes(t)) && (data.latency_ms === 0 || data.latency_ms < 5);
-    const serverBlocked = (data.upgrade_banner && data.upgrade_banner.length > 0) || resultIsBlock;
-    // Para texto simple con usuario logueado: ignorar el bloqueo del backend y mostrar respuesta
-    // Para funciones Pro: mostrar upgrade (ya controlado arriba, no debería llegar acá)
-    const isUpgrade = false;
     const fileData=data.file_url?{url:data.file_url,type:data.file_type,name:data.file_name}:null;
-    // Si el backend bloqueó pero el usuario está logueado y es texto simple → mostrar upgrade banner
-    if(serverBlocked && !isPro()){
+    // Si el usuario es Pro (verificado directo en Supabase), ignorar cualquier bloqueo del backend
+    const userIsPro = isPro() || userProfile?.is_pro || userProfile?.plan === 'pro';
+    const blockedTexts = ['esta funcion requiere', 'iniciá sesión', 'inicia sesion', 'suscri', 'no tenés acceso'];
+    const resultIsBlock = !userIsPro && blockedTexts.some(t => (data.result||'').toLowerCase().includes(t)) && (data.latency_ms === 0 || data.latency_ms < 5);
+    const serverBlocked = !userIsPro && ((data.upgrade_banner && data.upgrade_banner.length > 0) || resultIsBlock);
+    const isUpgrade = false;
+    if(serverBlocked){
       const bannerMsg = currentUser
         ? '🔒 Tu **Plan Gratis** incluye solo chat de texto. Activá Pro para imágenes, videos, archivos y más.'
         : '🔒 Iniciá sesión y activá Pro para acceder a esta función.';
