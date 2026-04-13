@@ -942,7 +942,8 @@ async function send(){
   if(authToken && !userProfile) await loadUserProfile();
   // ── CHEQUEO PLAN FREE ──
   const _userIsPro = !!(userProfile?.is_pro || userProfile?.plan === 'pro');
-  // Pro requerido: funciones avanzadas — solo bloquear si confirma que NO es pro
+  console.log('CHEQUEO INICIO → _userIsPro:', _userIsPro, '| requiresPro:', requiresPro(prompt, !!pendingFile), '| userProfile:', JSON.stringify({plan:userProfile?.plan,is_pro:userProfile?.is_pro}));
+  // NUNCA bloquear si es Pro
   if(requiresPro(prompt, !!pendingFile) && !_userIsPro){
     addMsg('user', prompt||(pendingFile?.name?`Analizar: ${pendingFile.name}`:''), null, null, pendingFile?.name);
     rmFile(); inp.value=''; inp.style.height='auto';
@@ -951,8 +952,10 @@ async function send(){
 **Plan Gratis:** solo conversaciones de texto (hasta 20 preguntas).
 **Plan Pro $9/mes:** imágenes IA, videos IA, Excel, Word, PDF, voz, búsqueda web y mensajes ilimitados.`;
     addMsg('ai', msg, null, '', null, null, '', '', true);
+    console.log('BLOQUEADO POR FRONTEND');
     return;
   }
+  console.log('PASÓ EL CHEQUEO FRONTEND → llamando al backend');
   // Límite de 20 preguntas en plan free
   if(!(isPro() || userProfile?.is_pro || userProfile?.plan === 'pro') && getFreeCount() >= FREE_LIMIT){
     addMsg('user', prompt, null, null, null);
