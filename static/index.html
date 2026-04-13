@@ -495,16 +495,10 @@ async function logout() {
   showLogin();
 }
 async function loadUserProfile() {
-  if (!authToken || !sb) return;
-  // Usar Supabase SDK con el token del usuario — bypasea RLS correctamente
+  if (!authToken || !sb || !currentUser) return;
   try {
-    // Setear la sesión con el token actual para que el SDK use RLS del usuario
-    const sbUser = supabase.createClient(
-      'https://fvmmlmxabeffdypptsui.supabase.co',
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ2bW1sbXhhYmVmZmR5cHB0c3VpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3ODM2NDIsImV4cCI6MjA5MTM1OTY0Mn0.s-SzFrgvWHNV4C0fazcjyEh_hYbcPvwPOM4oXNf_awM',
-      { global: { headers: { Authorization: `Bearer ${authToken}` } } }
-    );
-    const { data, error } = await sbUser
+    // Usar el cliente sb existente con headers del usuario
+    const { data, error } = await sb
       .from('users')
       .select('id, name, email, avatar_url, plan, plan_expires_at, daily_message_count')
       .eq('auth_id', currentUser.id)
@@ -942,11 +936,8 @@ async function send(){
   const inp=document.getElementById('prompt-input');
   const prompt=inp.value.trim();
   if(!prompt&&!pendingFile)return;
-  // Refrescar perfil si hay token (por si el plan cambió)
-  if(authToken) await loadUserProfile();
   // ── CHEQUEO PLAN FREE ──
   const _userIsPro = !!(userProfile?.is_pro || userProfile?.plan === 'pro');
-  console.log('send() → plan:', userProfile?.plan, '| is_pro:', userProfile?.is_pro, '| _userIsPro:', _userIsPro, '| requiresPro:', requiresPro(prompt, !!pendingFile));
   // Pro requerido: funciones avanzadas
   if(requiresPro(prompt, !!pendingFile) && !_userIsPro){
     addMsg('user', prompt||(pendingFile?.name?`Analizar: ${pendingFile.name}`:''), null, null, pendingFile?.name);
