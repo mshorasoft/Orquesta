@@ -679,6 +679,8 @@ class OrchestrateReq(BaseModel):
     language: str = ""
     tts_enabled: bool = False
     conversation_id: str = ""
+    user_plan: str = ""    # fallback cuando JWT falla
+    user_id: str = ""      # fallback cuando JWT falla""
 
 class OrchestrateResp(BaseModel):
     result: str
