@@ -498,8 +498,47 @@ async function loadUserProfile() {
   if (!authToken) return;
   try {
     const res = await fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${authToken}` } });
-    if (res.ok) userProfile = await res.json();
-  } catch(e) { console.warn('Perfil:', e); }
+    if (res.ok) {
+      userProfile = await res.json();
+    }
+  } catch(e) { console.warn('Perfil API:', e); }
+  // Si el backend dice free pero Supabase dice pro → consultar directo a Supabase
+  if ((!userProfile || !userProfile.is_pro) && sb && currentUser) {
+    try {
+      const { data, error } = await sb
+        .from('users')
+        .select('id, name, email, avatar_url, plan, plan_expires_at, daily_message_count')
+        .eq('auth_id', currentUser.id)
+        .single();
+      if (data && !error) {
+        // Verificar si plan_expires_at es válido
+        let isPlanValid = false;
+        if (data.plan === 'pro') {
+          if (!data.plan_expires_at) {
+            isPlanValid = true;
+          } else {
+            try {
+              const exp = new Date(data.plan_expires_at);
+              isPlanValid = exp > new Date();
+            } catch(e) { isPlanValid = false; }
+          }
+        }
+        // Construir userProfile con datos directos de Supabase
+        userProfile = {
+          ...userProfile,
+          id: data.id,
+          name: data.name,
+          email: data.email,
+          avatar_url: data.avatar_url,
+          plan: data.plan,
+          is_pro: data.plan === 'pro' && isPlanValid,
+          daily_message_count: data.daily_message_count || 0,
+          daily_remaining: data.plan === 'pro' ? -1 : Math.max(0, FREE_LIMIT - (data.daily_message_count || 0)),
+        };
+        console.log('Plan leído directo de Supabase:', data.plan, '→ is_pro:', userProfile.is_pro);
+      }
+    } catch(e) { console.warn('Supabase directo:', e); }
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
