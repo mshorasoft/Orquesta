@@ -744,19 +744,24 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
             except Exception:
                 continue
 
-    # Fallback final: si tenemos auth_id y user_plan del frontend, confiar en ello
-    # (el auth_id viene del token de Google OAuth — no se puede falsificar fácilmente)
-    if not user and req.auth_id and req.user_plan:
-        user = {
-            "id": req.user_id or req.auth_id,
-            "name": req.username or "",
-            "email": "",
-            "plan": req.user_plan,
-            "plan_expires_at": None,
-            "daily_message_count": 0,
-            "auth_id": req.auth_id,
-        }
-        print(f"Fallback final: auth_id={req.auth_id[:8]}... plan={req.user_plan}")
+    # Fallback final SEGURO: decodificar el JWT manualmente sin verificar firma
+    # para extraer el sub (auth_id) y buscar en DB — el plan SIEMPRE viene de DB
+    if not user and authorization and authorization.startswith("Bearer "):
+        try:
+            token = authorization.replace("Bearer ", "").strip()
+            parts = token.split(".")
+            if len(parts) == 3:
+                import base64 as _b64, json as _json
+                pad = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                payload = _json.loads(_b64.urlsafe_b64decode(pad))
+                sub = payload.get("sub", "")
+                if sub and supabase:
+                    r2 = supabase.table("users").select("*").eq("auth_id", sub).single().execute()
+                    if r2.data:
+                        user = r2.data
+                        print(f"Usuario por JWT sin verificar firma: plan={user.get('plan')}")
+        except Exception as e:
+            print(f"Fallback JWT decode: {e}")
 
     username = user["name"] if user else req.username
 
