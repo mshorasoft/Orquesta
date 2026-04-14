@@ -737,12 +737,17 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
             if not value:
                 continue
             try:
+                print(f"Buscando por {field}={value[:8]}...")
                 result = supabase.table("users").select("*").eq(field, value).single().execute()
+                print(f"Resultado: {result.data is not None}")
                 if result.data:
                     user = result.data
-                    print(f"Usuario encontrado por {field}={value[:8]}...: plan={user.get('plan')}")
+                    print(f"✅ Usuario encontrado: plan={user.get('plan')}")
                     break
-            except Exception:
+                else:
+                    print(f"❌ No encontrado para {field}={value[:8]}")
+            except Exception as e:
+                print(f"❌ Error buscando {field}={value[:8]}: {e}")
                 continue
 
     # Fallback final SEGURO: decodificar el JWT manualmente sin verificar firma
