@@ -343,7 +343,7 @@ a{color:var(--em-mid);text-decoration:none}
     </div>
     <div class="hdr-right">
       <div id="daily-counter"></div>
-      <button class="tts-toggle" id="tts-toggle" onclick="toggleTTS()" title="Activar/desactivar voz en respuestas (solo Pro)"><div class="tts-dot"></div><span>Voz</span></button>
+      <button class="tts-toggle" id="tts-toggle" onclick="toggleTTS()" title="Activar/desactivar lectura en voz alta de respuestas (Plan Pro)"><div class="tts-dot"></div><span id="tts-label">Voz</span></button>
       <div class="model-badge"><div class="mbadge-dot" id="mdot"></div><span id="model-label">listo</span></div>
     </div>
   </header>
@@ -564,6 +564,13 @@ function showApp() {
 function updateSidebarUser() {
   const area = document.getElementById('sb-user-area');
   const upgradeArea = document.getElementById('sb-upgrade-area');
+  // Activar TTS automáticamente para usuarios Pro si nunca lo configuraron
+  if(userProfile?.is_pro || userProfile?.plan === 'pro'){
+    if(localStorage.getItem('orq_tts') === null){
+      ttsEnabled = true;
+      localStorage.setItem('orq_tts', '1');
+    }
+  }
   if (!currentUser) {
     area.innerHTML = `<button class="sb-login-btn" onclick="showLogin()">🔐 Iniciar sesión</button>`;
     upgradeArea.innerHTML = ''; return;
@@ -771,8 +778,29 @@ function onKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}
 function chip(el){document.getElementById('prompt-input').value=el.textContent;send()}
 function onFile(e){const f=e.target.files[0];if(!f)return;pendingFile=f;document.getElementById('fp-name').textContent=f.name;document.getElementById('file-bar').classList.add('on')}
 function rmFile(){pendingFile=null;document.getElementById('file-input').value='';document.getElementById('file-bar').classList.remove('on')}
-function toggleTTS(){ttsEnabled=!ttsEnabled;localStorage.setItem('orq_tts',ttsEnabled?'1':'0');updateTTSBtn();if(!ttsEnabled&&currentAudio){currentAudio.pause();currentAudio=null}}
-function updateTTSBtn(){const btn=document.getElementById('tts-toggle');if(btn)btn.classList.toggle('active',ttsEnabled)}
+function toggleTTS(){
+  const isPro=!!(userProfile?.is_pro||userProfile?.plan==='pro');
+  if(!isPro && !ttsEnabled){
+    showToast('🔊 La voz en respuestas está disponible solo en Plan Pro.','warn',4000);
+    return;
+  }
+  ttsEnabled=!ttsEnabled;
+  localStorage.setItem('orq_tts',ttsEnabled?'1':'0');
+  updateTTSBtn();
+  if(!ttsEnabled&&currentAudio){currentAudio.pause();currentAudio=null}
+  if(ttsEnabled) showToast('🔊 Voz activada — las respuestas se leerán en voz alta.','info',3000);
+}
+function updateTTSBtn(){
+  const btn=document.getElementById('tts-toggle');
+  const lbl=document.getElementById('tts-label');
+  const isPro=!!(userProfile?.is_pro||userProfile?.plan==='pro');
+  if(btn){
+    btn.classList.toggle('active',ttsEnabled&&isPro);
+    btn.style.opacity = isPro ? '1' : '0.5';
+    btn.title = isPro ? (ttsEnabled ? '🔊 Voz activa — clic para desactivar' : '🔇 Voz inactiva — clic para activar') : 'Voz disponible solo en Plan Pro';
+  }
+  if(lbl) lbl.textContent = ttsEnabled&&isPro ? '🔊 Voz' : 'Voz';
+}
 function setBadge(label){
   const map={tavily:'var(--amber)',pollinations:'var(--purple)','dall-e':'var(--purple)',gemini:'var(--blue)',excel:'var(--em)',word:'var(--blue)',pdf:'var(--coral)'};
   let c='var(--em-mid)',d='var(--em)';
