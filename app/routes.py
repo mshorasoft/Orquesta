@@ -693,7 +693,8 @@ class OrchestrateReq(BaseModel):
     language: str = ""
     tts_enabled: bool = False
     conversation_id: str = ""
-    user_id: str = ""      # usado para buscar en DB cuando JWT falla
+    user_id: str = ""      # id de tabla users
+    auth_id: str = ""      # auth_id de Supabase Auth
     user_plan: str = ""    # ignorado por seguridad — el plan siempre viene de DB""
 
 class OrchestrateResp(BaseModel):
@@ -724,17 +725,21 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
 
     user = await get_optional_user(authorization)
 
-    # Fallback: buscar por user_id en Supabase (verificado en DB, no en JWT)
-    if not user and req.user_id and supabase:
-        try:
-            result = supabase.table("users").select("*").eq("id", req.user_id).single().execute()
-            if result.data:
-                user = result.data
-                print(f"Usuario encontrado por user_id: {user.get('plan')}")
-        except Exception as e:
-            print(f"Búsqueda por user_id falló: {e}")
-    # NOTA DE SEGURIDAD: NO usamos user_plan del body como fuente de verdad
-    # El plan siempre se verifica contra la base de datos Supabase
+    # Fallback: buscar en Supabase por múltiples campos (verificado en DB)
+    if not user and supabase:
+        # Intentar por auth_id (el más confiable — UUID de Supabase Auth)
+        for field, value in [("auth_id", req.auth_id), ("id", req.user_id), ("auth_id", req.user_id)]:
+            if not value:
+                continue
+            try:
+                result = supabase.table("users").select("*").eq(field, value).single().execute()
+                if result.data:
+                    user = result.data
+                    print(f"Usuario encontrado por {field}: {user.get('plan')}")
+                    break
+            except Exception:
+                continue
+    # NOTA DE SEGURIDAD: el plan siempre viene de la base de datos Supabase
 
     username = user["name"] if user else req.username
 
