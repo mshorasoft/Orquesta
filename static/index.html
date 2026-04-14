@@ -929,18 +929,23 @@ async function toggleMic(){
     recorder.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
       const blob=new Blob(recChunks,{type:mimeType});
-      if(blob.size < 1000){ showToast('Audio muy corto, intentá de nuevo.','warn'); return; }
-      const fd=new FormData(); fd.append('file',blob,'audio.webm');
+      console.log('Audio blob size:', blob.size, 'type:', blob.type);
+      if(blob.size < 500){ showToast('Audio muy corto, intentá de nuevo.','warn'); return; }
+      // Nombre de archivo con extensión correcta según mimeType
+      const ext = mimeType.includes('ogg') ? 'ogg' : 'webm';
+      const fd=new FormData(); fd.append('file', blob, `audio.${ext}`);
       try{ 
+        showToast('🔄 Transcribiendo...', 'info', 3000);
         const r=await fetch('/api/stt',{method:'POST',body:fd}); 
         const d=await r.json(); 
         if(d.text && d.text.trim()){ 
-          document.getElementById('prompt-input').value=d.text.trim(); 
+          document.getElementById('prompt-input').value=d.text.trim();
+          document.getElementById('prompt-input').dispatchEvent(new Event('input'));
           send(); 
         } else {
-          showToast('No se detectó voz, intentá de nuevo.','warn');
+          showToast('No se detectó voz. Hablá más fuerte o más cerca del micrófono.','warn', 4000);
         }
-      } catch(e){ showToast('Error al procesar el audio.','error'); }
+      } catch(e){ showToast('Error al procesar el audio: '+e.message,'error'); }
     };
     recorder.start(100); recording=true; btn.classList.add('rec');
     showToast('🎤 Escuchando... hacé clic de nuevo para enviar','info', 3000);
