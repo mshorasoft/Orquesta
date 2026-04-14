@@ -76,33 +76,38 @@ PRO_ONLY_TASKS = {
 
 def verify_jwt(token: str) -> dict:
     """Verifica el JWT de Supabase y retorna el payload."""
+    import base64, json, hmac, hashlib
+
     try:
-        import jwt as pyjwt
-        # Intentar primero con audience
-        try:
-            payload = pyjwt.decode(
-                token, SUPABASE_JWT_SECRET,
-                algorithms=["HS256"], audience="authenticated"
-            )
-            return payload
-        except Exception:
-            pass
-        # Segundo intento: sin verificar audience
-        try:
-            payload = pyjwt.decode(
-                token, SUPABASE_JWT_SECRET,
-                algorithms=["HS256"],
-                options={"verify_aud": False}
-            )
-            return payload
-        except Exception:
-            pass
-        # Último intento: sin verificar audience ni expiración
-        payload = pyjwt.decode(
-            token, SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            options={"verify_aud": False, "verify_exp": False}
-        )
+        # Decodificación manual del JWT sin librerías externas
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise ValueError("JWT inválido: estructura incorrecta")
+
+        # Decodificar payload (parte del medio)
+        payload_b64 = parts[1]
+        # Agregar padding si falta
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload_bytes = base64.urlsafe_b64decode(payload_b64)
+        payload = json.loads(payload_bytes)
+
+        # Verificar expiración
+        import time
+        if "exp" in payload and payload["exp"] < time.time():
+            raise ValueError("Token expirado")
+
+        # Verificar firma HMAC-SHA256
+        if SUPABASE_JWT_SECRET:
+            signing_input = f"{parts[0]}.{parts[1]}".encode()
+            secret = SUPABASE_JWT_SECRET.encode()
+            expected_sig = base64.urlsafe_b64encode(
+                hmac.new(secret, signing_input, hashlib.sha256).digest()
+            ).rstrip(b"=").decode()
+            if parts[2] != expected_sig:
+                raise ValueError("Firma JWT inválida")
+
         return payload
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
