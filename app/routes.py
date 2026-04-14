@@ -559,23 +559,15 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
 async def generate_video_smart(prompt: str, history=None, mode="general", username="") -> tuple[str, str, str]:
     import urllib.parse
 
-    VIDEOGEN_URL = os.getenv("VIDEOGEN_URL", "").rstrip("/")
-    VIDEOGEN_KEY = os.getenv("VIDEOGEN_API_KEY", "")
-    HF_KEY        = os.getenv("HUGGINGFACE_API_KEY", "")
-    FAL_KEY       = os.getenv("FAL_API_KEY", "")
-    SEGMIND_KEY   = os.getenv("SEGMIND_API_KEY", "")
+    VIDEOGEN_URL  = os.getenv("VIDEOGEN_URL", "").rstrip("/")
+    VIDEOGEN_KEY  = os.getenv("VIDEOGEN_API_KEY", "")
     MODELSLAB_KEY = os.getenv("MODELSLAB_API_KEY", "")
     REPLICATE_KEY = os.getenv("REPLICATE_API_KEY", "")
-    MINIMAX_KEY   = os.getenv("MINIMAX_API_KEY", "")
-    KLING_AK      = os.getenv("KLING_ACCESS_KEY", "")
-    KLING_SK      = os.getenv("KLING_SECRET_KEY", "")
-
-    errors = {}
 
     async def enhance(p):
         try:
             msgs = [
-                {"role":"system","content":"You are a video generation expert. Rewrite the user request as a detailed AI video prompt in English. Include: camera movement, lighting style, mood, action, visual style (cinematic, 4K, photorealistic). Max 120 words. Reply ONLY with the enhanced prompt."},
+                {"role":"system","content":"You are a video generation expert. Rewrite the user request as a detailed AI video prompt in English. Include: camera movement, lighting style, mood, action, visual style (cinematic, 4K, photorealistic). Max 80 words. Reply ONLY with the enhanced prompt."},
                 {"role":"user","content":f"Video request: {p}"}
             ]
             enhanced, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
@@ -584,46 +576,123 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
             return p
 
     enhanced = await enhance(prompt)
+    errors = {}
 
+    # ── 1. Motor propio (si está configurado) ──────────────────────────────────
     if VIDEOGEN_URL and VIDEOGEN_KEY:
         try:
             async with httpx.AsyncClient(timeout=300) as c:
                 r = await c.post(
                     f"{VIDEOGEN_URL}/generate",
-                    headers={"x-api-key": VIDEOGEN_KEY, "Content-Type": "application/json", "ngrok-skip-browser-warning": "true"},
-                    json={"prompt": enhanced, "num_frames": 40, "num_steps": 20, "fps": 8}
+                    headers={"x-api-key": VIDEOGEN_KEY, "Content-Type": "application/json"},
+                    json={"prompt": enhanced, "num_frames": 80, "num_steps": 25, "fps": 8}
                 )
                 if r.status_code == 200:
                     rd = r.json()
                     if rd.get("success"):
-                        video_url = f"{VIDEOGEN_URL}{rd.get('download_url','')}"
-                        dur = rd.get('duration_s', '?')
-                        return video_url, f"🎬 Video generado con **Orquesta VideoGen** ({dur}s, motor propio).", "orquesta · videogen"
-                    else:
-                        errors["videogen"] = rd.get("error", "Error desconocido")[:100]
+                        return f"{VIDEOGEN_URL}{rd.get('download_url','')}", f"🎬 Video generado ({rd.get('duration_s','?')}s).", "orquesta · videogen"
+                    errors["videogen"] = rd.get("error","Error")[:80]
                 else:
-                    errors["videogen"] = f"HTTP {r.status_code}: {r.text[:100]}"
+                    errors["videogen"] = f"HTTP {r.status_code}"
         except Exception as e:
-            errors["videogen"] = str(e)[:100]
+            errors["videogen"] = str(e)[:80]
 
+    # ── 2. Pollinations Video (100% gratuito, sin API key) ─────────────────────
+    try:
+        encoded = urllib.parse.quote(enhanced[:200])
+        # Pollinations tiene endpoint de video experimental
+        poll_url = f"https://video.pollinations.ai/prompt/{encoded}"
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+            r = await c.get(poll_url)
+            if r.status_code == 200 and "video" in r.headers.get("content-type", ""):
+                # Guardar el video en caché y devolver URL de descarga
+                video_bytes = r.content
+                if len(video_bytes) > 10000:  # Al menos 10KB
+                    token = str(uuid.uuid4())
+                    _file_cache[token] = (video_bytes, "video.mp4", "video/mp4")
+                    return f"/api/download/{token}", "🎬 Video generado con **Pollinations AI** (gratuito).", "pollinations · video"
+            errors["pollinations"] = f"HTTP {r.status_code} | {r.headers.get('content-type','?')}"
+    except Exception as e:
+        errors["pollinations"] = str(e)[:80]
+
+    # ── 3. ModelsLab (tiene tier gratuito) ─────────────────────────────────────
+    if MODELSLAB_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=120) as c:
+                r = await c.post(
+                    "https://modelslab.com/api/v6/video/text2video",
+                    json={
+                        "key": MODELSLAB_KEY,
+                        "prompt": enhanced,
+                        "negative_prompt": "low quality, blurry, distorted",
+                        "height": 512,
+                        "width": 912,
+                        "num_frames": 16,
+                        "num_inference_steps": 20,
+                        "guidance_scale": 7.5,
+                    }
+                )
+                d = r.json()
+                if d.get("status") == "success" and d.get("output"):
+                    video_url = d["output"][0]
+                    return video_url, "🎬 Video generado con **ModelsLab**.", "modelslab · video"
+                elif d.get("status") == "processing" and d.get("fetch_result"):
+                    # Polling para esperar resultado
+                    fetch_url = d["fetch_result"]
+                    for _ in range(12):  # Esperar hasta 2 minutos
+                        await asyncio.sleep(10)
+                        r2 = await c.post(fetch_url, json={"key": MODELSLAB_KEY})
+                        d2 = r2.json()
+                        if d2.get("status") == "success" and d2.get("output"):
+                            return d2["output"][0], "🎬 Video generado con **ModelsLab**.", "modelslab · video"
+                errors["modelslab"] = d.get("message","Error")[:80]
+        except Exception as e:
+            errors["modelslab"] = str(e)[:80]
+
+    # ── 4. Replicate (pago, pero muy barato ~$0.02) ────────────────────────────
+    if REPLICATE_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=180) as c:
+                # Usar Stable Video Diffusion o similar
+                r = await c.post(
+                    "https://api.replicate.com/v1/models/anotherjesse/zeroscope-v2-xl/predictions",
+                    headers={"Authorization": f"Token {REPLICATE_KEY}", "Content-Type": "application/json"},
+                    json={"input": {"prompt": enhanced, "num_frames": 24, "num_inference_steps": 20, "width": 1024, "height": 576}}
+                )
+                d = r.json()
+                pred_id = d.get("id")
+                if pred_id:
+                    # Polling
+                    for _ in range(18):
+                        await asyncio.sleep(10)
+                        r2 = await c.get(
+                            f"https://api.replicate.com/v1/predictions/{pred_id}",
+                            headers={"Authorization": f"Token {REPLICATE_KEY}"}
+                        )
+                        d2 = r2.json()
+                        if d2.get("status") == "succeeded" and d2.get("output"):
+                            return d2["output"][0], "🎬 Video generado con **Replicate** (ZeroScope XL).", "replicate · video"
+                        elif d2.get("status") == "failed":
+                            errors["replicate"] = d2.get("error","Failed")[:80]
+                            break
+        except Exception as e:
+            errors["replicate"] = str(e)[:80]
+
+    # ── Fallback: descripción cinematográfica ──────────────────────────────────
     video_system = (
         get_system(mode, username) +
-        "\n\nIMPORTANTE: El usuario pidió un video con IA. "
-        "Describí el video de forma muy cinematográfica y detallada. "
-        "Mantené coherencia con toda la conversación anterior. "
-        "Al final indicá brevemente que para generarlo automáticamente debe configurar una API de video."
+        "\n\nEl usuario pidió un video con IA. Describí el video de forma muy cinematográfica y detallada — "
+        "escenas, ángulos de cámara, iluminación, movimiento, duración estimada de cada toma. "
+        "Al final indicá brevemente qué API de video configurar para generarlo automáticamente."
     )
     hist = history[:-1] if history else []
-    desc_msgs = build_messages(video_system, hist, f"Video pedido: {prompt}\nPrompt mejorado: {enhanced}")
+    desc_msgs = build_messages(video_system, hist, f"Video: {prompt}\nPrompt mejorado: {enhanced}")
     description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
 
-    debug_info = ""
-    if errors:
-        errs_str = " | ".join([f"{k}: `{v[:80]}`" for k,v in errors.items()])
-        debug_info = f"\n\n> 🔧 **Debug:** {errs_str}"
+    errs_str = " | ".join([f"{k}: {v}" for k,v in errors.items()]) if errors else ""
+    debug = f"\n\n> 🔧 **APIs probadas:** {errs_str}" if errs_str else ""
+    return "", f"{description}{debug}", "orquesta · video-descripcion"
 
-    fallback_msg = f"{description}\n\n---\n**⚙️ Para generar este video automáticamente**, configurá las APIs de video en Railway.{debug_info}"
-    return "", fallback_msg, "orquesta · video-info"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  DEEP SEARCH
@@ -1377,9 +1446,40 @@ async def speech_to_text(file: UploadFile = File(...)):
     if not OPENAI_KEY: raise HTTPException(400, "OPENAI_API_KEY no configurada")
     try:
         audio_bytes = await file.read()
-        text = await call_openai_stt(audio_bytes, file.filename or "audio.webm")
-        return {"text": text}
-    except Exception as e: raise HTTPException(502, str(e))
+        print(f"STT: filename={file.filename} content_type={file.content_type} size={len(audio_bytes)}")
+        
+        # Whisper soporta: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg
+        # Usar filename con extensión correcta
+        fname = file.filename or "audio.webm"
+        content_type = file.content_type or "audio/webm"
+        
+        # Determinar extensión correcta
+        if "ogg" in content_type or "ogg" in fname:
+            fname = "audio.ogg"
+            content_type = "audio/ogg"
+        elif "mp4" in content_type or "m4a" in content_type:
+            fname = "audio.mp4"
+            content_type = "audio/mp4"
+        else:
+            fname = "audio.webm"
+            content_type = "audio/webm"
+        
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                files={"file": (fname, audio_bytes, content_type)},
+                data={"model": "whisper-1", "language": "es"}
+            )
+            d = r.json()
+            print(f"STT response: {r.status_code} | {str(d)[:200]}")
+            if not r.is_success:
+                raise Exception(d.get("error", {}).get("message", str(d)))
+            text = d.get("text", "").strip()
+            return {"text": text}
+    except Exception as e:
+        print(f"STT error: {e}")
+        raise HTTPException(502, str(e))
 
 @router.get("/status")
 async def status():
