@@ -1002,10 +1002,12 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     }
     // Contar pregunta en plan free
     if(!(isPro() || userProfile?.is_pro || userProfile?.plan === 'pro')) incFreeCount();
+    console.log('RESPUESTA BACKEND:', JSON.stringify({result:data.result?.slice(0,100), model_label:data.model_label, latency_ms:data.latency_ms, upgrade_banner:data.upgrade_banner}));
     setBadge(data.model_label);
     document.getElementById('typing-msg')?.remove();
     const fileData=data.file_url?{url:data.file_url,type:data.file_type,name:data.file_name}:null;
     const userIsPro = _userIsPro;
+    console.log('userIsPro en respuesta:', userIsPro);
     if(userIsPro){
       // Pro: mostrar siempre la respuesta del backend sin ningún filtro
       addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
@@ -1024,6 +1026,7 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     if(typeof data.daily_remaining==='number'&&userProfile){ userProfile.daily_remaining=data.daily_remaining; updateDailyCounter(); }
     saveLocalHistory(); renderHist();
   } catch(err){
+    console.error('ERROR EN SEND():', err.message, err.stack);
     document.getElementById('typing-msg')?.remove();
     addMsg('ai',`❌ Error: ${err.message}`);
     if(activeHistory.length&&activeHistory[activeHistory.length-1].role==='user') activeHistory.pop();
