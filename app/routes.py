@@ -76,39 +76,46 @@ PRO_ONLY_TASKS = {
 
 def verify_jwt(token: str) -> dict:
     """Verifica el JWT de Supabase y retorna el payload."""
-    import base64, json, hmac, hashlib
-
     try:
-        # Decodificación manual del JWT sin librerías externas
         parts = token.split(".")
         if len(parts) != 3:
             raise ValueError("JWT inválido: estructura incorrecta")
 
-        # Decodificar payload (parte del medio)
-        payload_b64 = parts[1]
-        # Agregar padding si falta
-        padding = 4 - len(payload_b64) % 4
-        if padding != 4:
-            payload_b64 += "=" * padding
-        payload_bytes = base64.urlsafe_b64decode(payload_b64)
-        payload = json.loads(payload_bytes)
+        # Decodificar payload
+        pad = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(pad))
 
         # Verificar expiración
-        import time
         if "exp" in payload and payload["exp"] < time.time():
             raise ValueError("Token expirado")
 
-        # Verificar firma HMAC-SHA256
+        # Verificar firma — Supabase usa HS256
         if SUPABASE_JWT_SECRET:
-            signing_input = f"{parts[0]}.{parts[1]}".encode()
-            secret = SUPABASE_JWT_SECRET.encode()
-            expected_sig = base64.urlsafe_b64encode(
-                hmac.new(secret, signing_input, hashlib.sha256).digest()
-            ).rstrip(b"=").decode()
-            if parts[2] != expected_sig:
-                raise ValueError("Firma JWT inválida")
+            signing_input = f"{parts[0]}.{parts[1]}".encode("utf-8")
+            # El secret de Supabase puede estar en base64 o como string plano
+            secret_str = SUPABASE_JWT_SECRET.strip()
+            # Intentar como string UTF-8 directo
+            try:
+                sig = hmac.new(secret_str.encode("utf-8"), signing_input, hashlib.sha256).digest()
+                expected = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+                if parts[2] == expected:
+                    return payload
+            except Exception:
+                pass
+            # Intentar decodificando el secret como base64
+            try:
+                secret_bytes = base64.b64decode(secret_str + "==")
+                sig = hmac.new(secret_bytes, signing_input, hashlib.sha256).digest()
+                expected = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+                if parts[2] == expected:
+                    return payload
+            except Exception:
+                pass
+            raise ValueError("Firma JWT inválida")
 
         return payload
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
 
