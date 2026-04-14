@@ -780,7 +780,7 @@ function onFile(e){const f=e.target.files[0];if(!f)return;pendingFile=f;document
 function rmFile(){pendingFile=null;document.getElementById('file-input').value='';document.getElementById('file-bar').classList.remove('on')}
 function toggleTTS(){
   const isPro=!!(userProfile?.is_pro||userProfile?.plan==='pro');
-  if(!isPro && !ttsEnabled){
+  if(!isPro){
     showToast('🔊 La voz en respuestas está disponible solo en Plan Pro.','warn',4000);
     return;
   }
@@ -788,7 +788,7 @@ function toggleTTS(){
   localStorage.setItem('orq_tts',ttsEnabled?'1':'0');
   updateTTSBtn();
   if(!ttsEnabled&&currentAudio){currentAudio.pause();currentAudio=null}
-  if(ttsEnabled) showToast('🔊 Voz activada — las respuestas se leerán en voz alta.','info',3000);
+  showToast(ttsEnabled?'🔊 Auto-reproducción activada':'🔇 Auto-reproducción desactivada','info',2000);
 }
 function updateTTSBtn(){
   const btn=document.getElementById('tts-toggle');
@@ -916,7 +916,12 @@ function addMsg(role,content,meta,imgUrl,filename,fileData,ttsUrl,videoUrl,isUpg
       vid.onerror=()=>{ vw.innerHTML=`<div class="video-actions"><a href="${videoUrl}" target="_blank" class="video-link-btn">▶️ Ver video</a></div>`; };
       vid.src=videoUrl; bubble.appendChild(vw);
     }
-    if(ttsUrl&&role==='ai'&&!isUpgrade) bubble.appendChild(buildAudioPlayer(ttsUrl));
+    if(ttsUrl&&role==='ai'&&!isUpgrade){
+      const player=buildAudioPlayer(ttsUrl);
+      bubble.appendChild(player);
+      // Auto-reproducir si el usuario activó la voz
+      if(ttsEnabled) setTimeout(()=>player.querySelector('.audio-play-btn')?.click(),500);
+    }
     if(role==='ai'&&!isUpgrade){
       const acts=document.createElement('div'); acts.className='bubble-actions';
       if(meta){ const pill=document.createElement('div'); pill.className='meta-pill'; pill.innerHTML=`<div class="mpill-dot" style="background:var(--em)"></div>${meta.label} · ${meta.ms}ms`; acts.appendChild(pill); }
@@ -1051,7 +1056,7 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
           history:activeHistory,
           mode,
           username:userProfile?.name||'',
-          tts_enabled:ttsEnabled&&(userProfile?.plan==='pro'||userProfile?.is_pro||false),
+          tts_enabled:!!(userProfile?.plan==='pro'||userProfile?.is_pro), // Pro siempre genera audio
           conversation_id:convId||'',
           user_plan: userProfile?.plan||'free',
           user_id: userProfile?.id||currentUser?.id||'',
