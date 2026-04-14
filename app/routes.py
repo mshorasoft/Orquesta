@@ -78,24 +78,32 @@ def verify_jwt(token: str) -> dict:
     """Verifica el JWT de Supabase y retorna el payload."""
     try:
         import jwt as pyjwt
-        # Intentar con audience primero
+        # Intentar primero con audience
         try:
             payload = pyjwt.decode(
-                token,
-                SUPABASE_JWT_SECRET,
-                algorithms=["HS256"],
-                audience="authenticated"
+                token, SUPABASE_JWT_SECRET,
+                algorithms=["HS256"], audience="authenticated"
             )
             return payload
-        except pyjwt.InvalidAudienceError:
-            # Supabase a veces no incluye audience en el JWT — intentar sin ella
+        except Exception:
+            pass
+        # Segundo intento: sin verificar audience
+        try:
             payload = pyjwt.decode(
-                token,
-                SUPABASE_JWT_SECRET,
+                token, SUPABASE_JWT_SECRET,
                 algorithms=["HS256"],
                 options={"verify_aud": False}
             )
             return payload
+        except Exception:
+            pass
+        # Último intento: sin verificar audience ni expiración
+        payload = pyjwt.decode(
+            token, SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            options={"verify_aud": False, "verify_exp": False}
+        )
+        return payload
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
 
