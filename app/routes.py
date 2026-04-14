@@ -729,6 +729,7 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
     if not req.prompt.strip(): raise HTTPException(400, "Prompt vacío")
 
     user = await get_optional_user(authorization)
+    print(f"orchestrate: auth_id='{req.auth_id[:8] if req.auth_id else ''}' user_id='{req.user_id[:8] if req.user_id else ''}' user_plan='{req.user_plan}' user={'found' if user else 'None'}")
 
     # Fallback: buscar en Supabase por auth_id o id
     if not user and supabase:
