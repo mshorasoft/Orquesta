@@ -995,7 +995,8 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
           tts_enabled:ttsEnabled&&_userIsPro,
           conversation_id:convId||'',
           user_plan: userProfile?.plan||'free',
-          user_id: userProfile?.id||currentUser?.id||''
+          user_id: userProfile?.id||currentUser?.id||'',
+          auth_id: currentUser?.id||''
         })
       });
       data=await res.json(); if(!res.ok) throw new Error(data.detail||'Error');
