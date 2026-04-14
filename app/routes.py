@@ -419,21 +419,53 @@ async def call_groq(messages, model="llama-3.3-70b-versatile"):
         return d["choices"][0]["message"]["content"]
 
 async def call_gemini(prompt):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
-    async with httpx.AsyncClient(timeout=35) as c:
-        r = await c.post(url, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":8192}})
-        d = r.json()
-        if not r.is_success: raise Exception(str(d))
-        return d["candidates"][0]["content"]["parts"][0]["text"]
+    models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.5-flash"]
+    for model in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+            async with httpx.AsyncClient(timeout=35) as c:
+                r = await c.post(url, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":8192}})
+                d = r.json()
+                if r.is_success:
+                    return d["candidates"][0]["content"]["parts"][0]["text"]
+                if "UNAVAILABLE" in str(d) or "503" in str(d):
+                    continue
+                raise Exception(str(d))
+        except Exception as e:
+            if "UNAVAILABLE" in str(e) or "503" in str(e):
+                continue
+            raise
+    raise Exception("Todos los modelos Gemini no disponibles")
 
 async def call_gemini_vision(prompt, b64, mime):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
-    payload = {"contents":[{"parts":[{"inline_data":{"mime_type":mime,"data":b64}},{"text":prompt}]}],"generationConfig":{"maxOutputTokens":4096,"temperature":0.3}}
-    async with httpx.AsyncClient(timeout=45) as c:
-        r = await c.post(url, json=payload)
-        d = r.json()
-        if not r.is_success: raise Exception(str(d))
-        return d["candidates"][0]["content"]["parts"][0]["text"]
+    # Intentar múltiples modelos Gemini con fallback
+    models = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+        "gemini-2.5-flash",
+    ]
+    last_error = None
+    for model in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+            payload = {"contents":[{"parts":[{"inline_data":{"mime_type":mime,"data":b64}},{"text":prompt}]}],"generationConfig":{"maxOutputTokens":4096,"temperature":0.3}}
+            async with httpx.AsyncClient(timeout=45) as c:
+                r = await c.post(url, json=payload)
+                d = r.json()
+                if r.is_success:
+                    return d["candidates"][0]["content"]["parts"][0]["text"]
+                err = str(d)
+                if "UNAVAILABLE" in err or "503" in err or "overloaded" in err.lower():
+                    last_error = err
+                    continue  # Probar siguiente modelo
+                raise Exception(err)
+        except Exception as e:
+            last_error = str(e)
+            if "UNAVAILABLE" in str(e) or "503" in str(e):
+                continue
+            raise
+    raise Exception(f"Todos los modelos Gemini no disponibles: {last_error}")
 
 async def call_tavily(query, depth="advanced", max_results=8):
     async with httpx.AsyncClient(timeout=20) as c:
