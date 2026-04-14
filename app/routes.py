@@ -138,30 +138,13 @@ async def get_optional_user(authorization: str = Header(None)) -> dict | None:
         return None
     try:
         token = authorization.replace("Bearer ", "").strip()
-        # Intentar verificar JWT manual
-        try:
-            auth_id = get_auth_id_from_token(token)
-        except Exception as jwt_err:
-            print(f"JWT verify failed: {jwt_err} — usando Supabase Auth API")
-            # Fallback: usar Supabase Auth API para validar el token
-            if supabase:
-                try:
-                    resp = supabase.auth.get_user(token)
-                    if resp and resp.user:
-                        auth_id = resp.user.id
-                    else:
-                        return None
-                except Exception as sb_err:
-                    print(f"Supabase get_user falló: {sb_err}")
-                    return None
-            else:
-                return None
+        auth_id = get_auth_id_from_token(token)
         if not supabase:
             return None
         result = supabase.table("users").select("*").eq("auth_id", auth_id).single().execute()
         return result.data if result.data else None
     except Exception as e:
-        print(f"get_optional_user error: {e}")
+        print(f"get_optional_user JWT error: {e}")
         return None
 
 def check_pro_access(user: dict, task: str) -> dict | None:
@@ -740,6 +723,26 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
     if not req.prompt.strip(): raise HTTPException(400, "Prompt vacío")
 
     user = await get_optional_user(authorization)
+
+    # Fallback 1: buscar por user_id enviado desde el frontend
+    if not user and req.user_id and supabase:
+        try:
+            result = supabase.table("users").select("*").eq("id", req.user_id).single().execute()
+            if result.data:
+                user = result.data
+                print(f"Usuario encontrado por user_id: {user.get('plan')}")
+        except Exception as e:
+            print(f"Búsqueda por user_id falló: {e}")
+
+    # Fallback 2: si el frontend confirma plan pro, construir user mínimo
+    if not user and req.user_plan == "pro" and req.user_id:
+        user = {
+            "id": req.user_id, "name": req.username or "",
+            "email": "", "plan": "pro", "plan_expires_at": None,
+            "daily_message_count": 0, "auth_id": "",
+        }
+        print(f"User construido desde body: plan=pro, id={req.user_id}")
+
     username = user["name"] if user else req.username
 
     t0 = time.time()
