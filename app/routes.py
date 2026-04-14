@@ -133,12 +133,35 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
     return result.data
 
 async def get_optional_user(authorization: str = Header(None)) -> dict | None:
-    """Como get_current_user pero no falla si no hay token (para compatibilidad)."""
+    """Como get_current_user pero nunca falla — retorna None si hay cualquier error."""
     if not authorization or not authorization.startswith("Bearer "):
         return None
     try:
-        return await get_current_user(authorization)
-    except:
+        token = authorization.replace("Bearer ", "").strip()
+        # Intentar verificar JWT manual
+        try:
+            auth_id = get_auth_id_from_token(token)
+        except Exception as jwt_err:
+            print(f"JWT verify failed: {jwt_err} — usando Supabase Auth API")
+            # Fallback: usar Supabase Auth API para validar el token
+            if supabase:
+                try:
+                    resp = supabase.auth.get_user(token)
+                    if resp and resp.user:
+                        auth_id = resp.user.id
+                    else:
+                        return None
+                except Exception as sb_err:
+                    print(f"Supabase get_user falló: {sb_err}")
+                    return None
+            else:
+                return None
+        if not supabase:
+            return None
+        result = supabase.table("users").select("*").eq("auth_id", auth_id).single().execute()
+        return result.data if result.data else None
+    except Exception as e:
+        print(f"get_optional_user error: {e}")
         return None
 
 def check_pro_access(user: dict, task: str) -> dict | None:
