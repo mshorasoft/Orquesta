@@ -731,43 +731,46 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
     user = await get_optional_user(authorization)
     print(f"orchestrate: auth_id='{req.auth_id[:8] if req.auth_id else ''}' user_id='{req.user_id[:8] if req.user_id else ''}' user_plan='{req.user_plan}' user={'found' if user else 'None'}")
 
-    # Fallback: buscar en Supabase por auth_id o id
-    if not user and supabase:
-        for field, value in [("auth_id", req.auth_id), ("auth_id", req.user_id), ("id", req.user_id)]:
+    # Fallback: buscar usuario via REST API de Supabase con httpx async
+    if not user and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        # Extraer auth_id del JWT sin verificar firma
+        jwt_auth_id = ""
+        if authorization and authorization.startswith("Bearer "):
+            try:
+                token = authorization.replace("Bearer ", "").strip()
+                parts = token.split(".")
+                if len(parts) == 3:
+                    pad = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                    jwt_payload = json.loads(base64.urlsafe_b64decode(pad))
+                    jwt_auth_id = jwt_payload.get("sub", "")
+            except Exception:
+                pass
+
+        # Intentar con todos los IDs disponibles
+        for field, value in [
+            ("auth_id", jwt_auth_id),
+            ("auth_id", req.auth_id),
+            ("auth_id", req.user_id),
+            ("id", req.user_id),
+        ]:
             if not value:
                 continue
             try:
-                print(f"Buscando por {field}={value[:8]}...")
-                result = supabase.table("users").select("*").eq(field, value).single().execute()
-                print(f"Resultado: {result.data is not None}")
-                if result.data:
-                    user = result.data
-                    print(f"✅ Usuario encontrado: plan={user.get('plan')}")
-                    break
-                else:
-                    print(f"❌ No encontrado para {field}={value[:8]}")
+                async with httpx.AsyncClient(timeout=10) as hx:
+                    url = f"{SUPABASE_URL}/rest/v1/users?{field}=eq.{value}&select=*&limit=1"
+                    resp = await hx.get(url, headers={
+                        "apikey": SUPABASE_SERVICE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                    })
+                    if resp.is_success:
+                        data_list = resp.json()
+                        if data_list:
+                            user = data_list[0]
+                            print(f"✅ Usuario via REST: {field}={value[:8]} plan={user.get('plan')}")
+                            break
             except Exception as e:
-                print(f"❌ Error buscando {field}={value[:8]}: {e}")
+                print(f"REST fallback {field}: {e}")
                 continue
-
-    # Fallback final SEGURO: decodificar el JWT manualmente sin verificar firma
-    # para extraer el sub (auth_id) y buscar en DB — el plan SIEMPRE viene de DB
-    if not user and authorization and authorization.startswith("Bearer "):
-        try:
-            token = authorization.replace("Bearer ", "").strip()
-            parts = token.split(".")
-            if len(parts) == 3:
-                import base64 as _b64, json as _json
-                pad = parts[1] + "=" * (4 - len(parts[1]) % 4)
-                payload = _json.loads(_b64.urlsafe_b64decode(pad))
-                sub = payload.get("sub", "")
-                if sub and supabase:
-                    r2 = supabase.table("users").select("*").eq("auth_id", sub).single().execute()
-                    if r2.data:
-                        user = r2.data
-                        print(f"Usuario por JWT sin verificar firma: plan={user.get('plan')}")
-        except Exception as e:
-            print(f"Fallback JWT decode: {e}")
 
     username = user["name"] if user else req.username
 
