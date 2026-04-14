@@ -343,7 +343,7 @@ a{color:var(--em-mid);text-decoration:none}
     </div>
     <div class="hdr-right">
       <div id="daily-counter"></div>
-      <button class="tts-toggle" id="tts-toggle" onclick="toggleTTS()"><div class="tts-dot"></div><span>Voz</span></button>
+      <button class="tts-toggle" id="tts-toggle" onclick="toggleTTS()" title="Activar/desactivar voz en respuestas (solo Pro)"><div class="tts-dot"></div><span>Voz</span></button>
       <div class="model-badge"><div class="mbadge-dot" id="mdot"></div><span id="model-label">listo</span></div>
     </div>
   </header>
@@ -917,17 +917,43 @@ async function toggleMic(){
   const btn=document.getElementById('mic-btn');
   if(recording){ recorder.stop(); recording=false; btn.classList.remove('rec'); return; }
   try{
-    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-    recorder=new MediaRecorder(stream); recChunks=[];
-    recorder.ondataavailable=e=>recChunks.push(e.data);
+    // Verificar si el navegador soporta getUserMedia
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      showToast('Tu navegador no soporta el micrófono. Usá Chrome o Edge.','error'); return;
+    }
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true, video:false});
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 
+                     MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+    recorder=new MediaRecorder(stream, {mimeType}); recChunks=[];
+    recorder.ondataavailable=e=>{ if(e.data.size>0) recChunks.push(e.data); };
     recorder.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
-      const blob=new Blob(recChunks,{type:'audio/webm'});
+      const blob=new Blob(recChunks,{type:mimeType});
+      if(blob.size < 1000){ showToast('Audio muy corto, intentá de nuevo.','warn'); return; }
       const fd=new FormData(); fd.append('file',blob,'audio.webm');
-      try{ const r=await fetch('/api/stt',{method:'POST',body:fd}); const d=await r.json(); if(d.text){ document.getElementById('prompt-input').value=d.text; send(); } } catch(e){ console.error(e); }
+      try{ 
+        const r=await fetch('/api/stt',{method:'POST',body:fd}); 
+        const d=await r.json(); 
+        if(d.text && d.text.trim()){ 
+          document.getElementById('prompt-input').value=d.text.trim(); 
+          send(); 
+        } else {
+          showToast('No se detectó voz, intentá de nuevo.','warn');
+        }
+      } catch(e){ showToast('Error al procesar el audio.','error'); }
     };
-    recorder.start(); recording=true; btn.classList.add('rec');
-  } catch(e){ showToast('No se pudo acceder al micrófono.','error'); }
+    recorder.start(100); recording=true; btn.classList.add('rec');
+    showToast('🎤 Escuchando... hacé clic de nuevo para enviar','info', 3000);
+  } catch(e){ 
+    console.error('Mic error:', e);
+    if(e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError'){
+      showToast('❌ Permiso de micrófono denegado. Habilitalo en el candado de la barra de dirección.','error', 6000);
+    } else if(e.name === 'NotFoundError'){
+      showToast('❌ No se encontró micrófono. Conectá uno e intentá de nuevo.','error', 5000);
+    } else {
+      showToast(`❌ Error de micrófono: ${e.message}`,'error');
+    }
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -992,7 +1018,7 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
           history:activeHistory,
           mode,
           username:userProfile?.name||'',
-          tts_enabled:ttsEnabled&&_userIsPro,
+          tts_enabled:ttsEnabled&&(userProfile?.plan==='pro'||userProfile?.is_pro||false),
           conversation_id:convId||'',
           user_plan: userProfile?.plan||'free',
           user_id: userProfile?.id||currentUser?.id||'',
