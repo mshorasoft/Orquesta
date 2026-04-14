@@ -693,8 +693,8 @@ class OrchestrateReq(BaseModel):
     language: str = ""
     tts_enabled: bool = False
     conversation_id: str = ""
-    user_plan: str = ""    # fallback cuando JWT falla
-    user_id: str = ""      # fallback cuando JWT falla""
+    user_id: str = ""      # usado para buscar en DB cuando JWT falla
+    user_plan: str = ""    # ignorado por seguridad — el plan siempre viene de DB""
 
 class OrchestrateResp(BaseModel):
     result: str
@@ -724,7 +724,7 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
 
     user = await get_optional_user(authorization)
 
-    # Fallback 1: buscar por user_id enviado desde el frontend
+    # Fallback: buscar por user_id en Supabase (verificado en DB, no en JWT)
     if not user and req.user_id and supabase:
         try:
             result = supabase.table("users").select("*").eq("id", req.user_id).single().execute()
@@ -733,15 +733,8 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
                 print(f"Usuario encontrado por user_id: {user.get('plan')}")
         except Exception as e:
             print(f"Búsqueda por user_id falló: {e}")
-
-    # Fallback 2: si el frontend confirma plan pro, construir user mínimo
-    if not user and req.user_plan == "pro" and req.user_id:
-        user = {
-            "id": req.user_id, "name": req.username or "",
-            "email": "", "plan": "pro", "plan_expires_at": None,
-            "daily_message_count": 0, "auth_id": "",
-        }
-        print(f"User construido desde body: plan=pro, id={req.user_id}")
+    # NOTA DE SEGURIDAD: NO usamos user_plan del body como fuente de verdad
+    # El plan siempre se verifica contra la base de datos Supabase
 
     username = user["name"] if user else req.username
 
