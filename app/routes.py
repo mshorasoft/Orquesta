@@ -471,12 +471,49 @@ async def call_openai_image_edit(image_bytes, prompt):
         return await call_openai_image_gen(d["choices"][0]["message"]["content"])
 
 async def call_openai_tts(text, voice="nova"):
-    async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.post("https://api.openai.com/v1/audio/speech",
-            headers={"Authorization": f"Bearer {OPENAI_KEY}"},
-            json={"model":"tts-1-hd","input":text[:4096],"voice":voice,"response_format":"mp3"})
-        if not r.is_success: raise Exception(f"TTS error: {r.text[:200]}")
-        return r.content
+    # 1. Intentar OpenAI TTS (mejor calidad)
+    if OPENAI_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post("https://api.openai.com/v1/audio/speech",
+                    headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                    json={"model":"tts-1","input":text[:4096],"voice":voice,"response_format":"mp3"})
+                if r.is_success:
+                    return r.content
+                print(f"OpenAI TTS error: {r.text[:100]}")
+        except Exception as e:
+            print(f"OpenAI TTS exception: {e}")
+
+    # 2. Fallback: ElevenLabs (si tiene API key)
+    ELEVENLABS_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+    if ELEVENLABS_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+                    headers={"xi-api-key": ELEVENLABS_KEY, "Content-Type": "application/json"},
+                    json={"text": text[:2500], "model_id": "eleven_multilingual_v2",
+                          "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
+                )
+                if r.is_success:
+                    return r.content
+        except Exception as e:
+            print(f"ElevenLabs TTS error: {e}")
+
+    # 3. Fallback: Edge TTS via servicio público (gratis, voz en español)
+    try:
+        import urllib.parse
+        voice_edge = "es-AR-TomasNeural"  # Voz argentina
+        escaped = urllib.parse.quote(text[:800])
+        edge_url = f"https://tts.mp3.day/api/tts?text={escaped}&voice={voice_edge}"
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(edge_url)
+            if r.is_success and len(r.content) > 1000:
+                return r.content
+    except Exception as e:
+        print(f"Edge TTS error: {e}")
+
+    raise Exception("No hay servicio TTS disponible")
 
 async def call_openai_stt(audio_bytes, filename):
     async with httpx.AsyncClient(timeout=30) as c:
@@ -1443,40 +1480,59 @@ async def text_to_speech(data: dict, authorization: str = Header(None)):
 
 @router.post("/stt")
 async def speech_to_text(file: UploadFile = File(...)):
-    if not OPENAI_KEY: raise HTTPException(400, "OPENAI_API_KEY no configurada")
     try:
         audio_bytes = await file.read()
-        print(f"STT: filename={file.filename} content_type={file.content_type} size={len(audio_bytes)}")
-        
-        # Whisper soporta: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg
-        # Usar filename con extensión correcta
         fname = file.filename or "audio.webm"
         content_type = file.content_type or "audio/webm"
-        
-        # Determinar extensión correcta
-        if "ogg" in content_type or "ogg" in fname:
-            fname = "audio.ogg"
-            content_type = "audio/ogg"
+
+        # Normalizar extensión
+        if "ogg" in content_type:
+            fname, content_type = "audio.ogg", "audio/ogg"
         elif "mp4" in content_type or "m4a" in content_type:
-            fname = "audio.mp4"
-            content_type = "audio/mp4"
+            fname, content_type = "audio.mp4", "audio/mp4"
         else:
-            fname = "audio.webm"
-            content_type = "audio/webm"
-        
-        async with httpx.AsyncClient(timeout=60) as c:
-            r = await c.post(
-                "https://api.openai.com/v1/audio/transcriptions",
-                headers={"Authorization": f"Bearer {OPENAI_KEY}"},
-                files={"file": (fname, audio_bytes, content_type)},
-                data={"model": "whisper-1", "language": "es"}
-            )
-            d = r.json()
-            print(f"STT response: {r.status_code} | {str(d)[:200]}")
-            if not r.is_success:
-                raise Exception(d.get("error", {}).get("message", str(d)))
-            text = d.get("text", "").strip()
-            return {"text": text}
+            fname, content_type = "audio.webm", "audio/webm"
+
+        print(f"STT: {fname} {len(audio_bytes)} bytes")
+
+        # 1. Intentar con Groq Whisper (gratis)
+        if GROQ_KEY:
+            try:
+                async with httpx.AsyncClient(timeout=60) as c:
+                    r = await c.post(
+                        "https://api.groq.com/openai/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                        files={"file": (fname, audio_bytes, content_type)},
+                        data={"model": "whisper-large-v3-turbo", "language": "es", "response_format": "json"}
+                    )
+                    d = r.json()
+                    print(f"Groq STT: {r.status_code} | {str(d)[:100]}")
+                    if r.is_success and d.get("text"):
+                        return {"text": d["text"].strip()}
+            except Exception as e:
+                print(f"Groq STT error: {e}")
+
+        # 2. Fallback: OpenAI Whisper
+        if OPENAI_KEY:
+            try:
+                async with httpx.AsyncClient(timeout=60) as c:
+                    r = await c.post(
+                        "https://api.openai.com/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                        files={"file": (fname, audio_bytes, content_type)},
+                        data={"model": "whisper-1", "language": "es"}
+                    )
+                    d = r.json()
+                    if r.is_success and d.get("text"):
+                        return {"text": d["text"].strip()}
+                    raise Exception(d.get("error", {}).get("message", str(d)))
+            except Exception as e:
+                print(f"OpenAI STT error: {e}")
+                raise HTTPException(502, str(e))
+
+        raise HTTPException(400, "No hay API key de STT configurada (GROQ_API_KEY o OPENAI_API_KEY)")
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"STT error: {e}")
         raise HTTPException(502, str(e))
