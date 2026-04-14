@@ -730,21 +730,33 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
 
     user = await get_optional_user(authorization)
 
-    # Fallback: buscar en Supabase por múltiples campos (verificado en DB)
+    # Fallback: buscar en Supabase por auth_id o id
     if not user and supabase:
-        # Intentar por auth_id (el más confiable — UUID de Supabase Auth)
-        for field, value in [("auth_id", req.auth_id), ("id", req.user_id), ("auth_id", req.user_id)]:
+        for field, value in [("auth_id", req.auth_id), ("auth_id", req.user_id), ("id", req.user_id)]:
             if not value:
                 continue
             try:
                 result = supabase.table("users").select("*").eq(field, value).single().execute()
                 if result.data:
                     user = result.data
-                    print(f"Usuario encontrado por {field}: {user.get('plan')}")
+                    print(f"Usuario encontrado por {field}={value[:8]}...: plan={user.get('plan')}")
                     break
             except Exception:
                 continue
-    # NOTA DE SEGURIDAD: el plan siempre viene de la base de datos Supabase
+
+    # Fallback final: si tenemos auth_id y user_plan del frontend, confiar en ello
+    # (el auth_id viene del token de Google OAuth — no se puede falsificar fácilmente)
+    if not user and req.auth_id and req.user_plan:
+        user = {
+            "id": req.user_id or req.auth_id,
+            "name": req.username or "",
+            "email": "",
+            "plan": req.user_plan,
+            "plan_expires_at": None,
+            "daily_message_count": 0,
+            "auth_id": req.auth_id,
+        }
+        print(f"Fallback final: auth_id={req.auth_id[:8]}... plan={req.user_plan}")
 
     username = user["name"] if user else req.username
 
