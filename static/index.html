@@ -439,6 +439,10 @@ function requiresPro(prompt, hasFile){
 // ══════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════
+window.addEventListener('beforeunload', () => {
+  saveLocalHistory();
+});
+
 window.addEventListener('load', async () => {
   if (sb) {
     const { data: { session } } = await sb.auth.getSession();
@@ -554,7 +558,23 @@ function showLogin() { showScreen('screen-login'); }
 function showPricing() { showScreen('screen-pricing'); renderPricingToggle(); }
 function showApp() {
   showScreen('screen-app');
-  updateSidebarUser(); updateDailyCounter(); updateTTSBtn(); loadConversations();
+  updateSidebarUser(); updateDailyCounter(); updateTTSBtn();
+  loadConversations().then(() => {
+    // Restaurar la última sesión activa si existe
+    const lastSession = localStorage.getItem('orq_last_session');
+    if(lastSession && !authToken){
+      const exists = sessions.find(s => s.id === lastSession);
+      if(exists){
+        loadSession(lastSession);
+        return;
+      }
+    }
+    // Si hay sesiones guardadas y no hay sesión activa, cargar la más reciente
+    if(sessions.length > 0 && !convId && !authToken){
+      loadSession(sessions[0].id);
+      return;
+    }
+  });
   document.getElementById('prompt-input').focus();
 }
 
@@ -677,7 +697,8 @@ async function loadConversations() {
   // Si no hay token o ya sabemos que la API da 401, usar localStorage
   if (!authToken) {
     try { sessions=JSON.parse(localStorage.getItem('orq_sessions')||'[]'); } catch(e){sessions=[];}
-    renderHist(); return;
+    renderHist();
+    return Promise.resolve();
   }
   // Solo intentar una vez — si da 401, usar localStorage y no reintentar
   try {
@@ -724,6 +745,10 @@ function saveLocalHistory() {
     if (i>=0) sessions[i]=meta; else sessions.unshift(meta);
     sessions=sessions.slice(0,60);
     localStorage.setItem('orq_sessions',JSON.stringify(sessions));
+    // Guardar qué sesión estaba activa para restaurar al recargar
+    if(activeHistory.length > 0){
+      localStorage.setItem('orq_last_session', sessionId);
+    }
   } catch(e){}
 }
 function renderHist() {
