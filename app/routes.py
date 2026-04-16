@@ -503,20 +503,23 @@ async def call_openai_image_edit(image_bytes, prompt):
         return await call_openai_image_gen(d["choices"][0]["message"]["content"])
 
 async def call_openai_tts(text, voice="nova"):
-    # 1. Intentar OpenAI TTS (mejor calidad)
+    clean = text[:2000].strip()
+
+    # 1. OpenAI TTS (mejor calidad, requiere créditos)
     if OPENAI_KEY:
         try:
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post("https://api.openai.com/v1/audio/speech",
                     headers={"Authorization": f"Bearer {OPENAI_KEY}"},
-                    json={"model":"tts-1","input":text[:4096],"voice":voice,"response_format":"mp3"})
+                    json={"model":"tts-1","input":clean,"voice":voice,"response_format":"mp3"})
                 if r.is_success:
+                    print("TTS: OpenAI OK")
                     return r.content
-                print(f"OpenAI TTS error: {r.text[:100]}")
+                print(f"OpenAI TTS: {r.status_code} {r.text[:100]}")
         except Exception as e:
-            print(f"OpenAI TTS exception: {e}")
+            print(f"OpenAI TTS error: {e}")
 
-    # 2. Fallback: ElevenLabs (si tiene API key)
+    # 2. ElevenLabs (tier gratis disponible en elevenlabs.io)
     ELEVENLABS_KEY = os.getenv("ELEVENLABS_API_KEY", "")
     if ELEVENLABS_KEY:
         try:
@@ -524,28 +527,47 @@ async def call_openai_tts(text, voice="nova"):
                 r = await c.post(
                     "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
                     headers={"xi-api-key": ELEVENLABS_KEY, "Content-Type": "application/json"},
-                    json={"text": text[:2500], "model_id": "eleven_multilingual_v2",
+                    json={"text": clean[:2500], "model_id": "eleven_multilingual_v2",
                           "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
                 )
                 if r.is_success:
+                    print("TTS: ElevenLabs OK")
                     return r.content
         except Exception as e:
             print(f"ElevenLabs TTS error: {e}")
 
-    # 3. Fallback: Edge TTS via servicio público (gratis, voz en español)
+    # 3. gTTS - Google Text to Speech (100% gratis, sin API key)
     try:
-        import urllib.parse
-        voice_edge = "es-AR-TomasNeural"  # Voz argentina
-        escaped = urllib.parse.quote(text[:800])
-        edge_url = f"https://tts.mp3.day/api/tts?text={escaped}&voice={voice_edge}"
-        async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.get(edge_url)
-            if r.is_success and len(r.content) > 1000:
-                return r.content
+        from gtts import gTTS
+        import io as _io
+        tts = gTTS(text=clean[:500], lang='es', slow=False)
+        buf = _io.BytesIO()
+        tts.write_to_fp(buf)
+        buf.seek(0)
+        audio_bytes = buf.read()
+        if len(audio_bytes) > 1000:
+            print("TTS: gTTS OK")
+            return audio_bytes
     except Exception as e:
-        print(f"Edge TTS error: {e}")
+        print(f"gTTS error: {e}")
 
-    raise Exception("No hay servicio TTS disponible")
+    # 4. Groq TTS (si tienen endpoint)
+    if GROQ_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    "https://api.groq.com/openai/v1/audio/speech",
+                    headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                    json={"model": "playai-tts", "input": clean[:1000], "voice": "Celeste-PlayAI", "response_format": "mp3"}
+                )
+                if r.is_success and len(r.content) > 1000:
+                    print("TTS: Groq OK")
+                    return r.content
+                print(f"Groq TTS: {r.status_code} {r.text[:100]}")
+        except Exception as e:
+            print(f"Groq TTS error: {e}")
+
+    raise Exception("No hay servicio TTS disponible — configurá ELEVENLABS_API_KEY o cargá créditos en OpenAI")
 
 async def call_openai_stt(audio_bytes, filename):
     async with httpx.AsyncClient(timeout=30) as c:
