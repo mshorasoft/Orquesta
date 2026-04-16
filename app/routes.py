@@ -581,7 +581,7 @@ async def call_openai_image_edit(image_bytes, prompt):
     raise Exception("Para editar imágenes configurá GEMINI_API_KEY o cargá créditos en OpenAI")
 
 async def call_openai_tts(text, voice="nova"):
-    clean = text[:2000].strip()
+    clean = text[:4000].strip()
 
     # 1. OpenAI TTS (mejor calidad, requiere créditos)
     if OPENAI_KEY:
@@ -618,13 +618,15 @@ async def call_openai_tts(text, voice="nova"):
     try:
         from gtts import gTTS
         import io as _io
-        tts = gTTS(text=clean[:500], lang='es', slow=False)
+        # gTTS soporta textos largos — usar hasta 3000 chars
+        tts_text = clean[:3000]
+        tts = gTTS(text=tts_text, lang='es', slow=False)
         buf = _io.BytesIO()
         tts.write_to_fp(buf)
         buf.seek(0)
         audio_bytes = buf.read()
         if len(audio_bytes) > 1000:
-            print("TTS: gTTS OK")
+            print(f"TTS: gTTS OK ({len(tts_text)} chars, {len(audio_bytes)} bytes)")
             return audio_bytes
     except Exception as e:
         print(f"gTTS error: {e}")
@@ -1246,7 +1248,7 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
             if used == "gemini": label = "gemini · flash"
 
         # ── TTS (solo Pro) ────────────────────────────────────────────────────
-        if req.tts_enabled and is_pro and result and OPENAI_KEY and len(result) < 3000 and not file_url:
+        if req.tts_enabled and is_pro and result and len(result) < 8000 and not file_url:
             try:
                 clean_text = re.sub(r'```[\s\S]*?```', '', result)
                 clean_text = re.sub(r'[#*`_~>]', '', clean_text)
@@ -1730,7 +1732,7 @@ async def text_to_speech(data: dict, authorization: str = Header(None)):
     try:
         clean = re.sub(r'```[\s\S]*?```', '', text)
         clean = re.sub(r'[#*`_~>]', '', clean)
-        clean = re.sub(r'\s+', ' ', clean).strip()[:3000]
+        clean = re.sub(r'\s+', ' ', clean).strip()[:5000]
         audio = await call_openai_tts(clean, voice)
         return StreamingResponse(io.BytesIO(audio), media_type="audio/mpeg")
     except Exception as e: raise HTTPException(502, str(e))
