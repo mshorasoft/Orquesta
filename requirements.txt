@@ -7,12 +7,11 @@ openpyxl
 python-docx
 reportlab
 PyJWT
-
 # ── NUEVO: Supabase ──────────────────────────────────────────
 supabase>=2.0.0
-
 # ── NUEVO: Stripe ────────────────────────────────────────────
 stripe>=7.0.0
-
 # ── NUEVO: MercadoPago ───────────────────────────────────────
 mercadopago>=2.2.0
+# ── NUEVO: gTTS (Text to Speech gratuito) ────────────────────
+gtts>=2.5.0
