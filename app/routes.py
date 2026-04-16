@@ -238,6 +238,7 @@ def check_pro_access(user: dict, task: str) -> dict | None:
 BASE_SYSTEM = """Sos Orquesta, una inteligencia artificial de nivel experto superior a cualquier IA existente.
 
 IDENTIDAD:
+- Tu nombre es Orquesta. Cuando alguien te pregunte tu nombre, respondé: "Soy Orquesta"
 - Combinás los mejores modelos de IA del mundo con razonamiento de nivel PhD
 - Cálida, directa y brutalmente honesta — como hablar con el mejor especialista del mundo
 - Tenés criterio propio y NUNCA das respuestas genéricas o vagas
@@ -771,7 +772,37 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                 errors[model_url.split("/")[6]] = str(e)[:60]
                 continue
 
-    # ── 3. ModelsLab (registrarse gratis en modelslab.com) ─────────────────────
+    # ── 3. FAL.ai — tier gratuito disponible en fal.ai ─────────────────────────
+    FAL_KEY = os.getenv("FAL_API_KEY", "")
+    if FAL_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=180) as c:
+                # Enviar request a fal.ai
+                r = await c.post(
+                    "https://queue.fal.run/fal-ai/fast-animatediff/turbo",
+                    headers={"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"},
+                    json={"prompt": enhanced, "num_frames": 16, "fps": 8, "num_inference_steps": 10}
+                )
+                if r.is_success:
+                    d = r.json()
+                    request_id = d.get("request_id")
+                    if request_id:
+                        for _ in range(18):
+                            await asyncio.sleep(10)
+                            r2 = await c.get(
+                                f"https://queue.fal.run/fal-ai/fast-animatediff/turbo/requests/{request_id}",
+                                headers={"Authorization": f"Key {FAL_KEY}"}
+                            )
+                            d2 = r2.json()
+                            if d2.get("status") == "COMPLETED":
+                                video_url = d2.get("response_url") or (d2.get("video", {}) or {}).get("url")
+                                if video_url:
+                                    return video_url, "🎬 Video generado con **FAL.ai**.", "fal · animatediff"
+                                break
+        except Exception as e:
+            errors["fal"] = str(e)[:80]
+
+    # ── 4. ModelsLab (registrarse gratis en modelslab.com) ─────────────────────
     if MODELSLAB_KEY:
         try:
             async with httpx.AsyncClient(timeout=30) as c:
@@ -933,7 +964,20 @@ def extract_title(prompt):
 async def generate_file_from_prompt(prompt, file_type, username=""):
     file_system = FILE_SYSTEM_PROMPTS.get(file_type, FILE_SYSTEM_PROMPTS["pdf"])
     if username: file_system += f"\n\nEl usuario se llama {username}."
-    msgs = [{"role":"system","content":file_system},{"role":"user","content":prompt}]
+    
+    # Enriquecer el prompt para mayor calidad
+    enhanced_prompt = f"""Generá contenido de MÁXIMA CALIDAD PROFESIONAL para el siguiente pedido.
+El contenido debe ser:
+- Completo y detallado (no básico)
+- Con datos reales, ejemplos concretos y estructura profesional
+- Formateado correctamente para {file_type.upper()}
+- Listo para usar en un contexto real de trabajo o negocio
+
+Pedido: {prompt}
+
+Incluí tantos datos, filas, columnas, secciones o contenido como sea necesario para que el archivo sea verdaderamente útil y completo."""
+    
+    msgs = [{"role":"system","content":file_system},{"role":"user","content":enhanced_prompt}]
     ai_content, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
     title = extract_title(prompt)
     safe = title[:30].replace(' ','_').replace('/','').replace('\\','')
