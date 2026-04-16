@@ -420,7 +420,12 @@ async def call_groq(messages, model="llama-3.3-70b-versatile"):
         return d["choices"][0]["message"]["content"]
 
 async def call_gemini(prompt):
-    models = ["gemini-2.5-flash"]
+    models = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash-exp",
+    ]
     for model in models:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
@@ -440,7 +445,12 @@ async def call_gemini(prompt):
 
 async def call_gemini_vision(prompt, b64, mime):
     # Intentar múltiples modelos Gemini con fallback
-    models = ["gemini-2.5-flash"]
+    models = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash-exp",
+    ]
     last_error = None
     for model in models:
         try:
@@ -452,16 +462,37 @@ async def call_gemini_vision(prompt, b64, mime):
                 if r.is_success:
                     return d["candidates"][0]["content"]["parts"][0]["text"]
                 err = str(d)
-                if "UNAVAILABLE" in err or "503" in err or "overloaded" in err.lower():
+                if "UNAVAILABLE" in err or "503" in err or "overloaded" in err.lower() or "high demand" in err.lower():
                     last_error = err
-                    continue  # Probar siguiente modelo
+                    await asyncio.sleep(3)  # Esperar antes de probar siguiente
+                    continue
                 raise Exception(err)
         except Exception as e:
             last_error = str(e)
-            if "UNAVAILABLE" in str(e) or "503" in str(e):
+            if "UNAVAILABLE" in str(e) or "503" in str(e) or "high demand" in str(e).lower():
+                await asyncio.sleep(3)
                 continue
             raise
-    raise Exception(f"Todos los modelos Gemini no disponibles: {last_error}")
+    # Fallback final: GPT-4o Vision si Gemini no está disponible
+    if OPENAI_KEY:
+        try:
+            msgs = [
+                {"role":"system","content":"Analyze the image/document and respond helpfully in Spanish."},
+                {"role":"user","content":[
+                    {"type":"image_url","image_url":{"url":f"data:{mime};base64,{b64}"}},
+                    {"type":"text","text":prompt}
+                ]}
+            ]
+            async with httpx.AsyncClient(timeout=45) as c:
+                r = await c.post("https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                    json={"model":"gpt-4o","messages":msgs,"max_tokens":2000})
+                d = r.json()
+                if r.is_success:
+                    return d["choices"][0]["message"]["content"]
+        except Exception as e:
+            print(f"GPT-4o Vision fallback error: {e}")
+    raise Exception(f"Todos los modelos de visión no disponibles. Gemini: {last_error}")
 
 async def call_tavily(query, depth="advanced", max_results=8):
     async with httpx.AsyncClient(timeout=20) as c:
