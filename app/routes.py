@@ -420,12 +420,7 @@ async def call_groq(messages, model="llama-3.3-70b-versatile"):
         return d["choices"][0]["message"]["content"]
 
 async def call_gemini(prompt):
-    models = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-preview-05-20",
-        "gemini-2.0-flash-lite",
-        "gemini-2.0-flash-exp",
-    ]
+    models = ["gemini-2.5-flash"]
     for model in models:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
@@ -445,12 +440,7 @@ async def call_gemini(prompt):
 
 async def call_gemini_vision(prompt, b64, mime):
     # Intentar múltiples modelos Gemini con fallback
-    models = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-preview-05-20",
-        "gemini-2.0-flash-lite",
-        "gemini-2.0-flash-exp",
-    ]
+    models = ["gemini-2.5-flash"]
     last_error = None
     for model in models:
         try:
@@ -473,7 +463,7 @@ async def call_gemini_vision(prompt, b64, mime):
                 await asyncio.sleep(3)
                 continue
             raise
-    # Fallback final: GPT-4o Vision si Gemini no está disponible
+    # Fallback 1: GPT-4o Vision (si tiene créditos)
     if OPENAI_KEY:
         try:
             msgs = [
@@ -491,8 +481,36 @@ async def call_gemini_vision(prompt, b64, mime):
                 if r.is_success:
                     return d["choices"][0]["message"]["content"]
         except Exception as e:
-            print(f"GPT-4o Vision fallback error: {e}")
-    raise Exception(f"Todos los modelos de visión no disponibles. Gemini: {last_error}")
+            print(f"GPT-4o Vision error: {e}")
+
+    # Fallback 2: Groq LLaVA (gratis, sin límite)
+    if GROQ_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=45) as c:
+                r = await c.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                    json={
+                        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                        "messages": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                                {"type": "text", "text": prompt}
+                            ]
+                        }],
+                        "max_tokens": 2000
+                    }
+                )
+                d = r.json()
+                if r.is_success:
+                    print("✅ Groq Vision OK")
+                    return d["choices"][0]["message"]["content"]
+                print(f"Groq Vision: {r.status_code} {str(d)[:100]}")
+        except Exception as e:
+            print(f"Groq Vision error: {e}")
+
+    raise Exception(f"Servicio de análisis de imágenes temporalmente no disponible. Intentá en unos minutos.")
 
 async def call_tavily(query, depth="advanced", max_results=8):
     async with httpx.AsyncClient(timeout=20) as c:
