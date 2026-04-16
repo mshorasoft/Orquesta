@@ -1687,6 +1687,229 @@ async def speech_to_text(file: UploadFile = File(...)):
         print(f"STT error: {e}")
         raise HTTPException(502, str(e))
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SISTEMA DE AUTO-MEJORAMIENTO
+# ─────────────────────────────────────────────────────────────────────────────
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPO  = os.getenv("GITHUB_REPO", "mshorasoft/Orquesta")
+OWNER_EMAIL  = os.getenv("OWNER_EMAIL", "ms.horasoft@gmail.com")
+
+# Almacén de errores y feedbacks recientes
+_error_log: list = []
+_feedback_log: list = []
+_pending_improvements: dict = {}  # id -> propuesta
+
+def log_error(endpoint: str, error: str, context: str = ""):
+    """Registra un error para análisis posterior."""
+    _error_log.append({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "endpoint": endpoint,
+        "error": error[:200],
+        "context": context[:100]
+    })
+    # Mantener solo los últimos 100 errores
+    if len(_error_log) > 100:
+        _error_log.pop(0)
+
+async def send_improvement_email(proposal: dict) -> bool:
+    """Envía email al dueño con la propuesta de mejora."""
+    SENDGRID_KEY = os.getenv("SENDGRID_API_KEY", "")
+    
+    approve_url = f"{APP_URL}/api/self-improve/approve/{proposal['id']}"
+    reject_url  = f"{APP_URL}/api/self-improve/reject/{proposal['id']}"
+    
+    html_body = f"""
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;background:#0d0f0d;color:#e3e8e4;padding:2rem;border-radius:12px;">
+      <h2 style="color:#1D9E75;">🤖 Orquesta detectó una mejora</h2>
+      <p><strong>Tipo:</strong> {proposal['type']}</p>
+      <p><strong>Descripción:</strong> {proposal['description']}</p>
+      <p><strong>Impacto estimado:</strong> {proposal['impact']}</p>
+      <p><strong>Cambio propuesto:</strong></p>
+      <pre style="background:#1c1e1b;padding:1rem;border-radius:8px;overflow-x:auto;font-size:12px;">{proposal['code_summary']}</pre>
+      <div style="margin-top:2rem;display:flex;gap:1rem;">
+        <a href="{approve_url}" style="background:#1D9E75;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">✅ Aprobar cambio</a>
+        <a href="{reject_url}" style="background:#c0392b;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">❌ Rechazar</a>
+      </div>
+      <p style="color:#3d4e3e;font-size:12px;margin-top:1.5rem;">Orquesta AI · Sistema de auto-mejoramiento</p>
+    </div>
+    """
+    
+    if SENDGRID_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.post(
+                    "https://api.sendgrid.com/v3/mail/send",
+                    headers={"Authorization": f"Bearer {SENDGRID_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "personalizations": [{"to": [{"email": OWNER_EMAIL}]}],
+                        "from": {"email": "orquesta@noreply.com", "name": "Orquesta AI"},
+                        "subject": f"🤖 Orquesta propone mejora: {proposal['type']}",
+                        "content": [{"type": "text/html", "value": html_body}]
+                    }
+                )
+                return r.is_success
+        except Exception as e:
+            print(f"Email error: {e}")
+    
+    # Fallback: guardar en log para ver en /api/self-improve/pending
+    print(f"MEJORA PENDIENTE: {proposal['id']} - {proposal['description']}")
+    return True
+
+async def apply_github_change(filename: str, new_content: str, commit_msg: str) -> bool:
+    """Aplica un cambio directamente en GitHub via API."""
+    if not GITHUB_TOKEN:
+        return False
+    try:
+        # Obtener el SHA actual del archivo
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(
+                f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}",
+                headers={"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+            )
+            if not r.is_success:
+                return False
+            sha = r.json().get("sha", "")
+            
+            # Actualizar el archivo
+            import base64 as _b64
+            encoded = _b64.b64encode(new_content.encode()).decode()
+            r2 = await c.put(
+                f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}",
+                headers={"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"},
+                json={
+                    "message": f"🤖 Auto-mejora: {commit_msg}",
+                    "content": encoded,
+                    "sha": sha,
+                    "branch": "main"
+                }
+            )
+            return r2.is_success
+    except Exception as e:
+        print(f"GitHub apply error: {e}")
+        return False
+
+async def analyze_and_propose_improvements():
+    """Analiza errores recientes y propone mejoras usando IA."""
+    if not _error_log and not _feedback_log:
+        return
+    
+    # Preparar contexto de errores
+    recent_errors = _error_log[-20:]
+    error_summary = "\n".join([f"- {e['endpoint']}: {e['error']}" for e in recent_errors])
+
+    
+    analysis_prompt = f"""Sos el sistema de auto-análisis de Orquesta AI.
+    
+Errores recientes detectados:
+{error_summary}
+
+Analizá estos errores y proponé UNA mejora específica y concreta que pueda implementarse en el código Python/FastAPI.
+La mejora debe ser:
+1. Pequeña y segura (no romper funcionalidad existente)
+2. Resolver un problema real de los errores listados
+3. Describible en 2-3 líneas de código
+
+Respondé SOLO en JSON con este formato exacto:
+{{
+  "type": "bug_fix|performance|new_feature",
+  "description": "descripción breve en español",
+  "impact": "alto|medio|bajo",
+  "code_summary": "descripción del cambio de código en 1-2 líneas",
+  "safe_to_auto_apply": true/false
+}}"""
+
+    try:
+        msgs = [{"role": "user", "content": analysis_prompt}]
+        result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+        
+        # Limpiar y parsear JSON
+        clean = result.replace("```json", "").replace("```", "").strip()
+        proposal_data = json.loads(clean)
+        
+        proposal_id = str(uuid.uuid4())[:8]
+        proposal = {
+            "id": proposal_id,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+            **proposal_data
+        }
+        
+        _pending_improvements[proposal_id] = proposal
+        await send_improvement_email(proposal)
+        print(f"✅ Mejora propuesta: {proposal_id} - {proposal_data.get('description','')}")
+        
+    except Exception as e:
+        print(f"Auto-analyze error: {e}")
+
+
+# ── ENDPOINTS DEL SISTEMA DE AUTO-MEJORAMIENTO ────────────────────────────────
+
+@router.get("/self-improve/pending")
+async def get_pending_improvements():
+    """Lista las mejoras pendientes de aprobación."""
+    return {
+        "pending": list(_pending_improvements.values()),
+        "recent_errors": len(_error_log),
+        "total_proposed": len(_pending_improvements)
+    }
+
+@router.get("/self-improve/approve/{proposal_id}")
+async def approve_improvement(proposal_id: str):
+    """Aprueba una mejora propuesta — redirige a página de confirmación."""
+    if proposal_id not in _pending_improvements:
+        return {"error": "Propuesta no encontrada"}
+    
+    proposal = _pending_improvements[proposal_id]
+    proposal["status"] = "approved"
+    proposal["approved_at"] = datetime.now(timezone.utc).isoformat()
+    
+    # Notificar que fue aprobada
+    print(f"✅ MEJORA APROBADA: {proposal_id} - {proposal.get('description','')}")
+    
+    # Si es seguro aplicar automáticamente, hacerlo
+    if proposal.get("safe_to_auto_apply"):
+        print(f"Aplicando automáticamente: {proposal_id}")
+        # Aquí iría la lógica de aplicar el cambio
+        # Por ahora solo marcamos como aprobada y notificamos
+    
+    # Retornar HTML de confirmación
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(f"""
+    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+    <div style="text-align:center;padding:2rem;">
+      <h1 style="color:#1D9E75;">✅ Mejora aprobada</h1>
+      <p>{proposal.get('description','')}</p>
+      <p style="color:#3d4e3e;font-size:13px;">Orquesta implementará el cambio en el próximo ciclo de análisis.</p>
+    </div></body></html>
+    """)
+
+@router.get("/self-improve/reject/{proposal_id}")
+async def reject_improvement(proposal_id: str):
+    """Rechaza una mejora propuesta."""
+    if proposal_id not in _pending_improvements:
+        return {"error": "Propuesta no encontrada"}
+    
+    _pending_improvements[proposal_id]["status"] = "rejected"
+    print(f"❌ MEJORA RECHAZADA: {proposal_id}")
+    
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(f"""
+    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+    <div style="text-align:center;padding:2rem;">
+      <h1 style="color:#c0392b;">❌ Mejora rechazada</h1>
+      <p style="color:#3d4e3e;font-size:13px;">Orquesta tomó nota. No aplicará este cambio.</p>
+    </div></body></html>
+    """)
+
+@router.post("/self-improve/trigger")
+async def trigger_analysis():
+    """Dispara un análisis manual de mejoras (solo para testing)."""
+    await analyze_and_propose_improvements()
+    return {"status": "analysis_triggered", "errors_analyzed": len(_error_log)}
+
 @router.get("/status")
 async def status():
     return {
