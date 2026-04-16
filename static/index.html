@@ -274,39 +274,93 @@ a{color:var(--em-mid);text-decoration:none}
     <span class="save-badge">Ahorrás $13</span>
   </div>
   <div class="pricing-cards">
+    <!-- PLAN FREE -->
     <div class="pricing-card">
       <div class="card-plan">Plan Free</div>
       <div class="card-price">$0<span>/mes</span></div>
-      <div class="card-period">Para siempre gratis</div>
+      <div class="card-period">Para siempre gratis · Sin tarjeta</div>
       <ul class="card-features">
-        <li class="yes"><span>✅</span> Chat de texto (10 msg/día)</li>
-        <li class="no"><span>❌</span> Generación de imágenes</li>
-        <li class="no"><span>❌</span> Generación de videos</li>
+        <li class="yes"><span>✅</span> Chat de texto con IA</li>
+        <li class="yes"><span>✅</span> Respuestas inteligentes</li>
+        <li class="yes"><span>✅</span> Búsqueda web básica</li>
+        <li class="no"><span>❌</span> Generación de imágenes IA</li>
+        <li class="no"><span>❌</span> Generación de videos IA</li>
         <li class="no"><span>❌</span> Archivos Excel / Word / PDF</li>
-        <li class="no"><span>❌</span> Búsqueda web en tiempo real</li>
-        <li class="no"><span>❌</span> Voz (TTS / STT)</li>
-        <li class="yes"><span>💬</span> 3 conversaciones guardadas</li>
+        <li class="no"><span>❌</span> Voz — hablar y escuchar</li>
+        <li class="no"><span>❌</span> Historial en la nube</li>
       </ul>
-      <button class="btn-plan free-btn" onclick="showApp()">Usar gratis →</button>
+      <button class="btn-plan free-btn" onclick="showApp()">Empezar gratis →</button>
     </div>
+    <!-- PLAN PRO -->
     <div class="pricing-card featured">
       <div class="card-plan pro">Plan Pro ⚡</div>
-      <div class="card-price" id="pro-price-display"><sup>$</sup>9<span id="pro-price-unit">/mes</span></div>
+      <div class="card-price" id="pro-price-display"><sup>$</sup>9<span id="pro-price-unit"> USD/mes</span></div>
       <div class="card-period" id="pro-price-sub">Facturación mensual · Cancelás cuando querés</div>
       <ul class="card-features">
-        <li class="yes"><span>✅</span> Mensajes ilimitados</li>
-        <li class="yes"><span>🎨</span> Imágenes con DALL-E 3 + Flux</li>
-        <li class="yes"><span>🎬</span> Videos con IA</li>
+        <li class="yes"><span>✅</span> Todo del plan Free</li>
+        <li class="yes"><span>💬</span> Mensajes ilimitados</li>
+        <li class="yes"><span>🎨</span> Imágenes IA (Flux + DALL-E)</li>
+        <li class="yes"><span>🎬</span> Videos generados con IA</li>
         <li class="yes"><span>📊</span> Archivos Excel / Word / PDF</li>
         <li class="yes"><span>🌐</span> Búsqueda web en tiempo real</li>
-        <li class="yes"><span>🔊</span> Voz — TTS y reconocimiento</li>
-        <li class="yes"><span>💾</span> Historial ilimitado en la nube</li>
+        <li class="yes"><span>🎤</span> Voz — hablá y escuchá a Orquesta</li>
+        <li class="yes"><span>☁️</span> Historial ilimitado en la nube</li>
+        <li class="yes"><span>⚡</span> Acceso prioritario a nuevas funciones</li>
       </ul>
-      <!-- ÚNICO BOTÓN: MercadoPago -->
       <button class="btn-plan mp-btn" onclick="checkout('mercadopago')" id="btn-mp">
-        🇦🇷 Pagar con MercadoPago
+        🇦🇷 Suscribirme con MercadoPago
       </button>
+      <p style="text-align:center;font-size:11px;color:var(--text3);margin-top:10px;">Pago seguro · Cancelás cuando querés</p>
     </div>
+  </div>
+  <!-- Comparativa extra -->
+  <div style="max-width:700px;width:100%;margin-top:2rem;position:relative;z-index:1;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;color:var(--text2);">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border2);">
+          <th style="text-align:left;padding:10px 12px;color:var(--text3);font-weight:500;">Función</th>
+          <th style="text-align:center;padding:10px 12px;color:var(--text3);font-weight:500;">Free</th>
+          <th style="text-align:center;padding:10px 12px;color:var(--pro);font-weight:600;">Pro ⚡</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:9px 12px;">Chat de texto con IA</td>
+          <td style="text-align:center;padding:9px 12px;">✅</td>
+          <td style="text-align:center;padding:9px 12px;color:var(--pro);">✅ Ilimitado</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:9px 12px;">Generación de imágenes IA</td>
+          <td style="text-align:center;">❌</td>
+          <td style="text-align:center;color:var(--pro);">✅ Flux + DALL-E</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:9px 12px;">Videos con IA</td>
+          <td style="text-align:center;">❌</td>
+          <td style="text-align:center;color:var(--pro);">✅ HD automático</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:9px 12px;">Archivos Excel / Word / PDF</td>
+          <td style="text-align:center;">❌</td>
+          <td style="text-align:center;color:var(--pro);">✅ Ilimitado</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:9px 12px;">Voz (hablar y escuchar)</td>
+          <td style="text-align:center;">❌</td>
+          <td style="text-align:center;color:var(--pro);">✅ Voz argentina</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:9px 12px;">Historial en la nube</td>
+          <td style="text-align:center;">❌</td>
+          <td style="text-align:center;color:var(--pro);">✅ Ilimitado</td>
+        </tr>
+        <tr>
+          <td style="padding:9px 12px;">Precio</td>
+          <td style="text-align:center;font-weight:600;">$0</td>
+          <td style="text-align:center;color:var(--pro);font-weight:600;">$9 USD/mes</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
   <div class="pricing-provider">
     <span>Pagos seguros con</span>
@@ -771,7 +825,21 @@ async function loadSession(id) {
   activeHistory=await loadSessionMessages(id);
   document.getElementById('messages').innerHTML='';
   if (!activeHistory.length) {
-    document.getElementById('messages').innerHTML='<div class="welcome" id="welcome"><h1>Conversación vacía</h1><p>Esta conversación no tiene mensajes.</p></div>';
+    // Mostrar pantalla de bienvenida con cara de Orquesta
+    const _wname = window._userName ? `, ${window._userName.split(' ')[0]}` : '';
+    const imgSrc = document.querySelector('.avatar.ai img')?.src || '';
+    const imgTag = imgSrc ? `<img style="height:140px;width:auto;filter:drop-shadow(0 8px 40px rgba(29,158,117,0.5));" src="${imgSrc}" alt="Orquesta">` : '';
+    document.getElementById('messages').innerHTML=`<div class="welcome" id="welcome">
+      <div style="margin-bottom:.5rem;">${imgTag}</div>
+      <h1>Hola${_wname}, ¿en qué puedo ayudarte ahora?</h1>
+      <p>Generá <strong>imágenes</strong>, <strong>videos con IA</strong>, archivos Excel/Word/PDF, buscá en internet y más.</p>
+      <div class="chips">
+        <div class="chip img-chip" onclick="chip(this)">Generá una imagen de una ciudad cyberpunk</div>
+        <div class="chip" onclick="chip(this)">¿Cómo salió Argentina hoy?</div>
+        <div class="chip file-chip" onclick="chip(this)">Haceme un Excel con presupuesto mensual</div>
+        <div class="chip vid-chip" onclick="chip(this)">Generá un video de una aurora boreal</div>
+      </div>
+    </div>`;
   } else {
     activeHistory.forEach(m=>addMsg(m.role==='user'?'user':'ai',m.content));
   }
@@ -780,9 +848,11 @@ async function loadSession(id) {
 }
 function newChat() {
   saveLocalHistory(); convId=null; sessionId='s_'+Date.now(); activeHistory=[];
+  const _wname = window._userName ? `, ${window._userName.split(' ')[0]}` : '';
   document.getElementById('messages').innerHTML=`<div class="welcome" id="welcome">
-    <h1>Nueva conversación</h1>
-    <p>Preguntá, pedí una imagen, generá un archivo o activá la voz.</p>
+    <div style="margin-bottom:.5rem;"><img style="height:180px;width:auto;filter:drop-shadow(0 8px 40px rgba(29,158,117,0.5));" src="${document.querySelector('.avatar.ai img')?.src||''}" alt="Orquesta"></div>
+    <h1>Hola${_wname}, ¿en qué puedo ayudarte ahora?</h1>
+    <p>Generá <strong>imágenes</strong>, <strong>videos con IA</strong>, archivos Excel/Word/PDF, buscá en internet y más.</p>
     <div class="chips">
       <div class="chip img-chip" onclick="chip(this)">Generá una imagen de una ciudad cyberpunk</div>
       <div class="chip" onclick="chip(this)">¿Cómo salió Argentina hoy?</div>
