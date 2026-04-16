@@ -31,17 +31,16 @@ def parse_expiry(expires_at: str) -> datetime:
     """Parsea plan_expires_at tolerando formatos +00 y +00:00 de Postgres."""
     if not expires_at:
         return datetime.max.replace(tzinfo=timezone.utc)
-    # Normalizar: "+00" → "+00:00", quitar microsegundos si hay problema
     s = expires_at.replace("Z", "+00:00")
-    # Postgres puede devolver "+00" sin los ":00"
-    import re as _re
-    s = _re.sub(r'\+(\d{2})$', r'+\1:00', s)
-    s = _re.sub(r'-(\d{2})$', r'-\1:00', s)
+    s = re.sub(r'\+(\d{2})$', r'+\1:00', s)
+    s = re.sub(r'-(\d{2})$', r'-\1:00', s)
     try:
         return datetime.fromisoformat(s)
     except Exception:
-        # Último fallback: asumir UTC
-        return datetime.fromisoformat(s.split('+')[0].split('-')[0] + '+00:00')
+        try:
+            return datetime.fromisoformat(s.split('+')[0] + '+00:00')
+        except Exception:
+            return datetime.max.replace(tzinfo=timezone.utc)
 
 
 # ── API KEYS ─────────────────────────────────────────────────────────────────
@@ -369,11 +368,23 @@ def classify(prompt, mode, history=None):
     if history:
         recent = [m.get("content","").lower() for m in history[-4:]]
         recent_joined = " ".join(recent)
-        video_followup = ["mp4","el video","el archivo","descargarlo","reproducir",
-                          "no funciona","no genera","no me da","el link","la url","ver el video"]
+
+        # Si el contexto reciente tiene código/python/archivo, priorizar eso
+        code_context = ["python","código","código","archivo","routes","script",".py",".js","función","class","def ","import "]
+        if any(k in recent_joined for k in code_context):
+            file_req = ["entregame","el archivo","el código","generame","el .py","el script","dame el","pasame"]
+            if any(k in p for k in file_req):
+                ftype = detect_file_type(p)
+                if ftype: return f"file_gen_{ftype}"
+                return "code"
+
+        # Video followup — solo si el contexto reciente es de video
+        video_followup = ["mp4","el video","descargarlo","reproducir","no funciona","no genera",
+                          "no me da","el link","la url","ver el video"]
         if any(k in p for k in video_followup):
-            if any(k in recent_joined for k in ["video","mp4","generar","generando","kling","minimax","luma"]):
+            if any(k in recent_joined for k in ["video","mp4","generar","generando","kling","minimax","luma","replicate"]):
                 return "video_gen"
+
         img_followup = ["la imagen","la foto","no carga","no se ve","otro estilo","más oscura","más grande"]
         if any(k in p for k in img_followup):
             if any(k in recent_joined for k in ["imagen","foto","dall-e","pollinations","generada"]):
@@ -990,13 +1001,20 @@ async def deep_search(query: str) -> str:
 
 from app.file_generator import generate_excel, generate_docx, generate_pdf, FILE_SYSTEM_PROMPTS
 
-_file_cache: dict = {}
+_file_cache: dict = {}  # token -> (bytes, filename, mime, timestamp)
 
 def cache_file(file_bytes, filename, mime):
     token = str(uuid.uuid4())
-    _file_cache[token] = (file_bytes, filename, mime)
+    _file_cache[token] = (file_bytes, filename, mime, time.time())
+    # Limpiar archivos de más de 2 horas o si hay más de 50
+    now = time.time()
+    expired = [k for k, v in _file_cache.items() if now - v[3] > 7200]
+    for k in expired:
+        del _file_cache[k]
     if len(_file_cache) > 50:
-        del _file_cache[list(_file_cache.keys())[0]]
+        oldest = sorted(_file_cache.keys(), key=lambda k: _file_cache[k][3])[:10]
+        for k in oldest:
+            del _file_cache[k]
     return token
 
 def extract_title(prompt):
@@ -1624,8 +1642,9 @@ async def debug_config():
 
 @router.get("/download/{token}")
 async def download_file(token: str):
-    if token not in _file_cache: raise HTTPException(404, "Archivo no encontrado o expirado")
-    file_bytes, filename, mime = _file_cache[token]
+    if token not in _file_cache: raise HTTPException(404, "Archivo no encontrado o expirado (máx 2 horas)")
+    cached = _file_cache[token]
+    file_bytes, filename, mime = cached[0], cached[1], cached[2]
     return Response(content=file_bytes, media_type=mime,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
