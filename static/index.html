@@ -185,6 +185,13 @@ a{color:var(--em-mid);text-decoration:none}
 .file-card-name{font-size:13px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .file-card-sub{font-size:11px;color:var(--text2);margin-top:2px}
 .file-card-dl{font-family:var(--font-mono);font-size:10px;color:var(--em-mid);flex-shrink:0}
+.compare-table{width:100%;border-collapse:collapse;font-size:13px;color:var(--text2);background:var(--surface);border:1px solid var(--border2);border-radius:12px;overflow:hidden;margin-top:2rem}
+.compare-table th{padding:12px 16px;color:var(--text3);font-weight:500;background:var(--surface2);text-align:left}
+.compare-table th:not(:first-child){text-align:center}
+.compare-table td{padding:10px 16px;border-top:1px solid var(--border)}
+.compare-table td:not(:first-child){text-align:center}
+.compare-table tr:hover{background:rgba(255,255,255,.02)}
+.compare-table .pro-col{color:var(--pro);font-weight:600}
 .gen-image{max-width:100%;border-radius:10px;margin-top:8px;display:block;border:1px solid var(--border2)}
 .img-loading{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);margin-top:8px}
 .typing-indicator{display:flex;gap:3px;align-items:center;padding:4px 2px}
@@ -245,6 +252,7 @@ a{color:var(--em-mid);text-decoration:none}
     </button>
     <div class="login-divider">o</div>
     <button class="btn-guest" onclick="continueAsGuest()">Continuar sin cuenta — modo limitado</button>
+    <button class="btn-guest" onclick="showPricing()" style="margin-top:8px;border-color:rgba(139,127,232,.3);color:var(--pro);">⚡ Ver planes y precios →</button>
     <div class="login-plans">
       <div class="plan-pill">
         <span class="badge badge-free">FREE</span>
@@ -314,13 +322,13 @@ a{color:var(--em-mid);text-decoration:none}
     </div>
   </div>
   <!-- Comparativa extra -->
-  <div style="max-width:700px;width:100%;margin-top:2rem;position:relative;z-index:1;">
-    <table style="width:100%;border-collapse:collapse;font-size:13px;color:var(--text2);">
+  <div style="max-width:700px;width:90%;margin-top:2rem;position:relative;z-index:1;margin-left:auto;margin-right:auto;">
+    <table class="compare-table">
       <thead>
         <tr style="border-bottom:1px solid var(--border2);">
-          <th style="text-align:left;padding:10px 12px;color:var(--text3);font-weight:500;">Función</th>
-          <th style="text-align:center;padding:10px 12px;color:var(--text3);font-weight:500;">Free</th>
-          <th style="text-align:center;padding:10px 12px;color:var(--pro);font-weight:600;">Pro ⚡</th>
+          <th>Función</th>
+          <th>Free</th>
+          <th style="color:var(--pro);">Pro ⚡</th>
         </tr>
       </thead>
       <tbody>
