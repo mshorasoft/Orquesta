@@ -420,7 +420,7 @@ async def call_groq(messages, model="llama-3.3-70b-versatile"):
         return d["choices"][0]["message"]["content"]
 
 async def call_gemini(prompt):
-    models = ["gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash-latest"]
+    models = ["gemini-2.5-flash"]
     for model in models:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
@@ -440,12 +440,7 @@ async def call_gemini(prompt):
 
 async def call_gemini_vision(prompt, b64, mime):
     # Intentar múltiples modelos Gemini con fallback
-    models = [
-        "gemini-2.5-flash",
-        "gemini-1.5-pro",
-        "gemini-1.5-flash-latest",
-        "gemini-pro-vision",
-    ]
+    models = ["gemini-2.5-flash"]
     last_error = None
     for model in models:
         try:
