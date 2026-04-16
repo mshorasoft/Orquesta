@@ -489,18 +489,40 @@ async def call_openai_image_gen(prompt):
         return d["data"][0]["url"]
 
 async def call_openai_image_edit(image_bytes, prompt):
+    import urllib.parse
     b64 = base64.b64encode(image_bytes).decode()
-    msgs = [
-        {"role":"system","content":"Analyze the image and create a DALL-E 3 prompt recreating it WITH the modification. Reply ONLY with the prompt."},
-        {"role":"user","content":[{"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}},{"type":"text","text":f"Modification: {prompt}"}]}
-    ]
-    async with httpx.AsyncClient(timeout=40) as c:
-        r = await c.post("https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENAI_KEY}"},
-            json={"model":"gpt-4o","messages":msgs,"max_tokens":600})
-        d = r.json()
-        if not r.is_success: raise Exception(d.get("error",{}).get("message","GPT-4o error"))
-        return await call_openai_image_gen(d["choices"][0]["message"]["content"])
+
+    # 1. Intentar con OpenAI GPT-4o + DALL-E (requiere créditos)
+    if OPENAI_KEY:
+        try:
+            msgs = [
+                {"role":"system","content":"Analyze the image and create a detailed prompt recreating it WITH the modification. Reply ONLY with the prompt in English."},
+                {"role":"user","content":[{"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}},{"type":"text","text":f"Modification: {prompt}"}]}
+            ]
+            async with httpx.AsyncClient(timeout=40) as c:
+                r = await c.post("https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                    json={"model":"gpt-4o","messages":msgs,"max_tokens":600})
+                d = r.json()
+                if r.is_success:
+                    new_prompt = d["choices"][0]["message"]["content"]
+                    return await call_openai_image_gen(new_prompt)
+        except:
+            pass
+
+    # 2. Usar Gemini para analizar la imagen y Pollinations para generar
+    if GEMINI_KEY:
+        try:
+            analysis_prompt = f"Analyze this image in detail and create a prompt to recreate it WITH this modification: {prompt}. Reply ONLY with the English prompt, max 200 words."
+            new_prompt = await call_gemini_vision(analysis_prompt, b64, "image/jpeg")
+            seed = int(time.time()) % 99999
+            encoded = urllib.parse.quote(new_prompt[:400])
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true&seed={seed}&model=flux&nofeed=true"
+            return url
+        except Exception as e:
+            raise Exception(f"Error al editar imagen: {str(e)[:100]}")
+
+    raise Exception("Para editar imágenes configurá GEMINI_API_KEY o cargá créditos en OpenAI")
 
 async def call_openai_tts(text, voice="nova"):
     clean = text[:2000].strip()
@@ -620,26 +642,35 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
         except:
             return p
 
-    if OPENAI_KEY:
-        try:
-            url = await call_openai_image_gen(prompt)
-            return url, "✨ Imagen generada con **DALL-E 3**.", "openai · dall-e-3"
-        except Exception as e:
-            err = str(e).lower()
-            if not any(x in err for x in ["quota","billing","insufficient","policy","safety"]):
-                pass
+    enhanced = await enhance(prompt)
+    seed = int(time.time()) % 99999
 
+    # 1. Pollinations Flux (gratuito, sin API key) — primera opción
     try:
-        enhanced = await enhance(prompt)
-        seed = int(time.time()) % 99999
         encoded = urllib.parse.quote(enhanced)
         url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true&seed={seed}&model=flux&nofeed=true"
-        return url, "🎨 Imagen generada con **Pollinations AI** (modelo Flux).", "pollinations · flux"
+        return url, "🎨 Imagen generada con **Pollinations AI** (Flux).", "pollinations · flux"
     except:
         pass
 
-    seed = int(time.time()) % 99999
-    encoded = urllib.parse.quote(prompt[:400])
+    # 2. Pollinations SDXL
+    try:
+        encoded = urllib.parse.quote(enhanced)
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={seed}&model=turbo&nofeed=true"
+        return url, "🎨 Imagen generada con **Pollinations AI** (Turbo).", "pollinations · turbo"
+    except:
+        pass
+
+    # 3. OpenAI DALL-E 3 (requiere créditos)
+    if OPENAI_KEY:
+        try:
+            url = await call_openai_image_gen(enhanced)
+            return url, "✨ Imagen generada con **DALL-E 3**.", "openai · dall-e-3"
+        except:
+            pass
+
+    # 4. Fallback básico
+    encoded = urllib.parse.quote(prompt[:300])
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={seed}&nofeed=true"
     return url, "🎨 Imagen generada.", "pollinations · imagen"
 
@@ -688,47 +719,57 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["videogen"] = str(e)[:80]
 
-    # ── 2. Replicate — Zeroscope XL (requiere REPLICATE_API_KEY, $5 gratis al registrarse) ──
+    # ── 2. Replicate — múltiples modelos de video ──────────────────────────────
     if REPLICATE_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(
-                    "https://api.replicate.com/v1/models/anotherjesse/zeroscope-v2-xl/predictions",
-                    headers={"Authorization": f"Token {REPLICATE_KEY}", "Content-Type": "application/json"},
-                    json={"input": {
-                        "prompt": enhanced,
-                        "negative_prompt": "low quality, blurry, distorted, watermark",
-                        "num_frames": 24,
-                        "num_inference_steps": 25,
-                        "width": 1024,
-                        "height": 576,
-                        "guidance_scale": 17.5,
-                    }}
-                )
-                d = r.json()
-                pred_id = d.get("id")
-                if pred_id:
+        # Modelos en orden de preferencia (todos gratuitos con $5 de crédito inicial)
+        replicate_models = [
+            # Minimax Video — alta calidad, 6 segundos
+            ("https://api.replicate.com/v1/models/minimax/video-01/predictions",
+             {"prompt": enhanced, "prompt_optimizer": True}),
+            # Wan 2.1 — buena calidad, rápido
+            ("https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-480p/predictions",
+             {"prompt": enhanced, "num_frames": 81, "sample_steps": 20, "sample_guide_scale": 5}),
+            # LTX Video — rápido y gratuito
+            ("https://api.replicate.com/v1/models/lightricks/ltx-video/predictions",
+             {"prompt": enhanced, "negative_prompt": "low quality, blurry", "num_frames": 121, "frame_rate": 25}),
+        ]
+        for model_url, model_input in replicate_models:
+            try:
+                async with httpx.AsyncClient(timeout=30) as c:
+                    r = await c.post(
+                        model_url,
+                        headers={"Authorization": f"Token {REPLICATE_KEY}", "Content-Type": "application/json"},
+                        json={"input": model_input}
+                    )
+                    d = r.json()
+                    pred_id = d.get("id")
+                    if not pred_id:
+                        errors[model_url.split("/")[6]] = d.get("detail", str(d))[:60]
+                        continue
                     # Polling hasta 3 minutos
-                    for _ in range(18):
-                        await asyncio.sleep(10)
-                        r2 = await c.get(
-                            f"https://api.replicate.com/v1/predictions/{pred_id}",
-                            headers={"Authorization": f"Token {REPLICATE_KEY}"}
-                        )
-                        d2 = r2.json()
-                        status = d2.get("status")
-                        if status == "succeeded":
-                            output = d2.get("output")
-                            video_url = output[0] if isinstance(output, list) else output
-                            if video_url:
-                                return video_url, "🎬 Video generado con **Replicate** (ZeroScope XL · 1024×576).", "replicate · zeroscope"
-                        elif status == "failed":
-                            errors["replicate"] = d2.get("error", "Failed")[:80]
-                            break
-                else:
-                    errors["replicate"] = d.get("detail", str(d))[:80]
-        except Exception as e:
-            errors["replicate"] = str(e)[:80]
+                    video_url = None
+                    async with httpx.AsyncClient(timeout=200) as c2:
+                        for _ in range(18):
+                            await asyncio.sleep(10)
+                            r2 = await c2.get(
+                                f"https://api.replicate.com/v1/predictions/{pred_id}",
+                                headers={"Authorization": f"Token {REPLICATE_KEY}"}
+                            )
+                            d2 = r2.json()
+                            status = d2.get("status")
+                            if status == "succeeded":
+                                output = d2.get("output")
+                                video_url = output[0] if isinstance(output, list) else output
+                                break
+                            elif status == "failed":
+                                errors[model_url.split("/")[6]] = d2.get("error", "Failed")[:60]
+                                break
+                    if video_url:
+                        model_name = model_url.split("/")[5] + "/" + model_url.split("/")[6]
+                        return video_url, f"🎬 Video generado con **{model_name}**.", f"replicate · {model_url.split('/')[6]}"
+            except Exception as e:
+                errors[model_url.split("/")[6]] = str(e)[:60]
+                continue
 
     # ── 3. ModelsLab (registrarse gratis en modelslab.com) ─────────────────────
     if MODELSLAB_KEY:
