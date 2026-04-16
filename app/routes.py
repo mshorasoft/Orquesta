@@ -666,23 +666,78 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["videogen"] = str(e)[:80]
 
-    # ── 2. Pollinations Video (100% gratuito, sin API key) ─────────────────────
-    try:
-        encoded = urllib.parse.quote(enhanced[:200])
-        # Pollinations tiene endpoint de video experimental
-        poll_url = f"https://video.pollinations.ai/prompt/{encoded}"
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
-            r = await c.get(poll_url)
-            if r.status_code == 200 and "video" in r.headers.get("content-type", ""):
-                # Guardar el video en caché y devolver URL de descarga
-                video_bytes = r.content
-                if len(video_bytes) > 10000:  # Al menos 10KB
-                    token = str(uuid.uuid4())
-                    _file_cache[token] = (video_bytes, "video.mp4", "video/mp4")
-                    return f"/api/download/{token}", "🎬 Video generado con **Pollinations AI** (gratuito).", "pollinations · video"
-            errors["pollinations"] = f"HTTP {r.status_code} | {r.headers.get('content-type','?')}"
-    except Exception as e:
-        errors["pollinations"] = str(e)[:80]
+    # ── 2. Replicate — Zeroscope XL (requiere REPLICATE_API_KEY, $5 gratis al registrarse) ──
+    if REPLICATE_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    "https://api.replicate.com/v1/models/anotherjesse/zeroscope-v2-xl/predictions",
+                    headers={"Authorization": f"Token {REPLICATE_KEY}", "Content-Type": "application/json"},
+                    json={"input": {
+                        "prompt": enhanced,
+                        "negative_prompt": "low quality, blurry, distorted, watermark",
+                        "num_frames": 24,
+                        "num_inference_steps": 25,
+                        "width": 1024,
+                        "height": 576,
+                        "guidance_scale": 17.5,
+                    }}
+                )
+                d = r.json()
+                pred_id = d.get("id")
+                if pred_id:
+                    # Polling hasta 3 minutos
+                    for _ in range(18):
+                        await asyncio.sleep(10)
+                        r2 = await c.get(
+                            f"https://api.replicate.com/v1/predictions/{pred_id}",
+                            headers={"Authorization": f"Token {REPLICATE_KEY}"}
+                        )
+                        d2 = r2.json()
+                        status = d2.get("status")
+                        if status == "succeeded":
+                            output = d2.get("output")
+                            video_url = output[0] if isinstance(output, list) else output
+                            if video_url:
+                                return video_url, "🎬 Video generado con **Replicate** (ZeroScope XL · 1024×576).", "replicate · zeroscope"
+                        elif status == "failed":
+                            errors["replicate"] = d2.get("error", "Failed")[:80]
+                            break
+                else:
+                    errors["replicate"] = d.get("detail", str(d))[:80]
+        except Exception as e:
+            errors["replicate"] = str(e)[:80]
+
+    # ── 3. ModelsLab (registrarse gratis en modelslab.com) ─────────────────────
+    if MODELSLAB_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    "https://modelslab.com/api/v6/video/text2video",
+                    json={
+                        "key": MODELSLAB_KEY,
+                        "prompt": enhanced,
+                        "negative_prompt": "low quality, blurry",
+                        "height": 512, "width": 912,
+                        "num_frames": 16,
+                        "num_inference_steps": 20,
+                        "guidance_scale": 7.5,
+                    }
+                )
+                d = r.json()
+                if d.get("status") == "success" and d.get("output"):
+                    return d["output"][0], "🎬 Video generado con **ModelsLab**.", "modelslab · video"
+                elif d.get("status") == "processing" and d.get("fetch_result"):
+                    fetch_url = d["fetch_result"]
+                    for _ in range(12):
+                        await asyncio.sleep(10)
+                        r2 = await c.post(fetch_url, json={"key": MODELSLAB_KEY})
+                        d2 = r2.json()
+                        if d2.get("status") == "success" and d2.get("output"):
+                            return d2["output"][0], "🎬 Video generado con **ModelsLab**.", "modelslab · video"
+                errors["modelslab"] = d.get("message", str(d))[:80]
+        except Exception as e:
+            errors["modelslab"] = str(e)[:80]
 
     # ── 3. ModelsLab (tiene tier gratuito) ─────────────────────────────────────
     if MODELSLAB_KEY:
