@@ -863,35 +863,55 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
 
     # ── 2. Replicate — múltiples modelos de video ──────────────────────────────
     if REPLICATE_KEY:
-        # Modelos en orden de preferencia (todos gratuitos con $5 de crédito inicial)
+        print(f"🎬 Replicate: intentando generar video con prompt: {enhanced[:80]}")
+        # Usar la API v1/predictions con versiones específicas — más confiable
         replicate_models = [
-            # Minimax Video — alta calidad, 6 segundos
-            ("https://api.replicate.com/v1/models/minimax/video-01/predictions",
-             {"prompt": enhanced, "prompt_optimizer": True}),
-            # Wan 2.1 — buena calidad, rápido
-            ("https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-480p/predictions",
-             {"prompt": enhanced, "num_frames": 81, "sample_steps": 20, "sample_guide_scale": 5}),
-            # LTX Video — rápido y gratuito
-            ("https://api.replicate.com/v1/models/lightricks/ltx-video/predictions",
-             {"prompt": enhanced, "negative_prompt": "low quality, blurry", "num_frames": 121, "frame_rate": 25}),
+            # Wan 2.1 480p — rápido, barato, confiable
+            {
+                "url": "https://api.replicate.com/v1/predictions",
+                "version": "a36b6b8a07c8f1c6c5567ee3a7eb23eef88df880f4e1716cb9ea0f72766e9591",
+                "input": {"prompt": enhanced, "num_frames": 81, "sample_steps": 20},
+                "name": "wan-2.1-480p"
+            },
+            # Minimax Video-01 — buena calidad
+            {
+                "url": "https://api.replicate.com/v1/models/minimax/video-01/predictions",
+                "version": None,
+                "input": {"prompt": enhanced, "prompt_optimizer": True},
+                "name": "minimax-video-01"
+            },
+            # LTX Video — rápido
+            {
+                "url": "https://api.replicate.com/v1/models/lightricks/ltx-video/predictions",
+                "version": None,
+                "input": {"prompt": enhanced, "negative_prompt": "low quality, blurry, distorted"},
+                "name": "ltx-video"
+            },
         ]
-        for model_url, model_input in replicate_models:
+        for model in replicate_models:
             try:
+                payload = {"input": model["input"]}
+                if model.get("version"):
+                    payload["version"] = model["version"]
+                
+                print(f"🎬 Replicate: probando {model['name']}...")
                 async with httpx.AsyncClient(timeout=30) as c:
                     r = await c.post(
-                        model_url,
+                        model["url"],
                         headers={"Authorization": f"Token {REPLICATE_KEY}", "Content-Type": "application/json"},
-                        json={"input": model_input}
+                        json=payload
                     )
                     d = r.json()
+                    print(f"🎬 Replicate {model['name']}: status={r.status_code} response={str(d)[:150]}")
                     pred_id = d.get("id")
                     if not pred_id:
-                        errors[model_url.split("/")[6]] = d.get("detail", str(d))[:60]
+                        errors[model["name"]] = d.get("detail", str(d))[:80]
                         continue
+                    
                     # Polling hasta 3 minutos
                     video_url = None
                     async with httpx.AsyncClient(timeout=200) as c2:
-                        for _ in range(18):
+                        for attempt in range(18):
                             await asyncio.sleep(10)
                             r2 = await c2.get(
                                 f"https://api.replicate.com/v1/predictions/{pred_id}",
@@ -899,18 +919,23 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                             )
                             d2 = r2.json()
                             status = d2.get("status")
+                            print(f"🎬 Replicate {model['name']} polling {attempt+1}/18: {status}")
                             if status == "succeeded":
                                 output = d2.get("output")
                                 video_url = output[0] if isinstance(output, list) else output
                                 break
                             elif status == "failed":
-                                errors[model_url.split("/")[6]] = d2.get("error", "Failed")[:60]
+                                err = d2.get("error", "Failed")
+                                errors[model["name"]] = err[:80]
+                                print(f"🎬 Replicate {model['name']} failed: {err}")
                                 break
+                    
                     if video_url:
-                        model_name = model_url.split("/")[5] + "/" + model_url.split("/")[6]
-                        return video_url, f"🎬 Video generado con **{model_name}**.", f"replicate · {model_url.split('/')[6]}"
+                        print(f"✅ Video generado con {model['name']}: {video_url}")
+                        return video_url, f"🎬 Video generado con **Replicate** ({model['name']}).", f"replicate · {model['name']}"
             except Exception as e:
-                errors[model_url.split("/")[6]] = str(e)[:60]
+                errors[model["name"]] = str(e)[:60]
+                print(f"🎬 Replicate {model['name']} exception: {e}")
                 continue
 
     # ── 3. FAL.ai — tier gratuito disponible en fal.ai ─────────────────────────
