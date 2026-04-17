@@ -2019,47 +2019,36 @@ async def get_current_routes_content() -> str:
     return ""
 
 async def analyze_and_propose_improvements():
-    """Analiza errores recientes y propone mejoras usando IA con código real."""
+    """Analiza errores recientes y propone mejoras — versión rápida sin GitHub."""
     if not _error_log and not _feedback_log:
         return
 
-    recent_errors = _error_log[-20:]
-    error_summary = "\n".join([f"- {e['endpoint']}: {e['error']}" for e in recent_errors])
+    recent_errors = _error_log[-10:]  # Solo últimos 10 para ser más rápido
+    error_summary = "\n".join([f"- {e['endpoint']}: {e['error'][:100]}" for e in recent_errors])
 
-    # Obtener el código actual para que la IA proponga cambios reales
-    current_code = await get_current_routes_content()
-    code_context = f"\n\nCódigo actual (primeras 3000 chars):\n{current_code[:3000]}" if current_code else ""
+    # Prompt simple y directo — sin código fuente para evitar timeouts
+    analysis_prompt = f"""Analizá estos errores de Orquesta AI y proponé UNA mejora concreta.
 
-    analysis_prompt = f"""Sos el sistema de auto-análisis de Orquesta AI.
+Errores detectados:
+{error_summary}
 
-Errores recientes detectados:
-{error_summary}{code_context}
-
-Analizá estos errores y proponé UNA mejora específica con el código exacto a cambiar.
-La mejora debe ser PEQUEÑA y SEGURA.
-
-Respondé SOLO en JSON con este formato exacto (sin markdown):
-{{
-  "type": "bug_fix|performance|new_feature",
-  "description": "descripción breve en español de qué se corrige",
-  "impact": "alto|medio|bajo",
-  "code_summary": "qué líneas cambian y por qué",
-  "old_code": "el fragmento EXACTO de código a reemplazar (máx 5 líneas)",
-  "new_code": "el código nuevo que lo reemplaza (máx 8 líneas)",
-  "safe_to_auto_apply": true
-}}"""
+Respondé SOLO con JSON válido (sin markdown, sin texto extra):
+{{"type":"bug_fix","description":"descripción corta en español","impact":"alto","code_summary":"qué cambiaría en el código","old_code":"fragmento a reemplazar","new_code":"código nuevo","safe_to_auto_apply":true}}"""
 
     try:
-        msgs = [{"role": "user", "content": analysis_prompt}]
-        result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
-        clean = result.replace("```json", "").replace("```", "").strip()
-        # Extraer solo el JSON
+        # Timeout explícito para no colgarse
+        async with asyncio.timeout(20):
+            msgs = [{"role": "user", "content": analysis_prompt}]
+            result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+
+        # Parsear JSON de forma robusta
+        clean = result.strip()
         start = clean.find("{")
         end = clean.rfind("}") + 1
-        if start >= 0 and end > start:
-            clean = clean[start:end]
-        proposal_data = json.loads(clean)
-
+        if start < 0 or end <= start:
+            raise ValueError(f"No hay JSON válido en la respuesta: {clean[:100]}")
+        
+        proposal_data = json.loads(clean[start:end])
         proposal_id = str(uuid.uuid4())[:8]
         proposal = {
             "id": proposal_id,
@@ -2067,13 +2056,18 @@ Respondé SOLO en JSON con este formato exacto (sin markdown):
             "status": "pending",
             **proposal_data
         }
-
         _pending_improvements[proposal_id] = proposal
-        await send_improvement_email(proposal)
         print(f"✅ Mejora propuesta: {proposal_id} - {proposal_data.get('description','')}")
+        
+        # Enviar email en background sin bloquear
+        asyncio.create_task(send_improvement_email(proposal))
+        return proposal_id
 
+    except asyncio.TimeoutError:
+        print("⏱ analyze timeout — Groq tardó más de 20 segundos")
     except Exception as e:
         print(f"Auto-analyze error: {e}")
+    return None
 
 
 # ── ENDPOINTS DEL SISTEMA DE AUTO-MEJORAMIENTO ────────────────────────────────
@@ -2173,25 +2167,49 @@ async def trigger_analysis_post():
 
 @router.get("/self-improve/trigger")
 async def trigger_analysis_get():
-    """Dispara un análisis manual via GET (para probar desde el browser)."""
-    if not _error_log:
-        log_error("/api/orchestrate", "JWT verify failed — Token inválido", "auth")
-        log_error("/api/stt", "Quota exceeded — OpenAI sin créditos", "stt")
-        log_error("/api/orchestrate", "Gemini 503 UNAVAILABLE — model saturado", "vision")
-    await analyze_and_propose_improvements()
+    """Dispara un análisis manual via GET — responde rápido."""
     from fastapi.responses import HTMLResponse
+
+    # Agregar errores de ejemplo si no hay ninguno
+    if not _error_log:
+        log_error("/api/upload", "Gemini 429 quota exceeded — free tier limit reached", "vision")
+        log_error("/api/stt", "OpenAI quota exceeded — billing required", "stt")
+        log_error("/api/orchestrate", "video_gen fallback — no API credits available", "video")
+
+    # Lanzar análisis en background — no esperar resultado
+    asyncio.create_task(analyze_and_propose_improvements())
+
     pending = list(_pending_improvements.values())
-    items = "".join([f"<li style='margin:.5rem 0'><strong>{p.get('type','')}</strong>: {p.get('description','')} — <a href='/api/self-improve/approve/{p['id']}' style='color:#1D9E75'>✅ Aprobar</a> · <a href='/api/self-improve/reject/{p['id']}' style='color:#c0392b'>❌ Rechazar</a></li>" for p in pending])
-    return HTMLResponse(f"""
-    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;padding:2rem;max-width:700px;margin:0 auto;">
-    <h2 style="color:#1D9E75;">🤖 Sistema de Auto-mejoramiento</h2>
-    <p>Errores analizados: <strong>{len(_error_log)}</strong></p>
-    <p>Mejoras pendientes: <strong>{len(pending)}</strong></p>
-    <p style="color:#aaa;font-size:13px;">Se envió email de notificación a ms.horasoft@gmail.com</p>
-    {"<ul>" + items + "</ul>" if pending else "<p style='color:#aaa'>Sin mejoras pendientes aún — esperando acumulación de errores reales.</p>"}
-    <br><a href="/api/self-improve/pending" style="color:#1D9E75;">Ver JSON completo →</a>
-    </body></html>
-    """)
+    items = "".join([
+        f"""<li style='margin:.8rem 0;padding:.8rem;background:#1c1e1b;border-radius:8px;border-left:3px solid #1D9E75;'>
+        <strong style='color:#1D9E75;'>{p.get('type','').upper()}</strong>: {p.get('description','')}
+        <br><small style='color:#aaa;'>{p.get('code_summary','')}</small>
+        <br style='margin:.4rem 0;'>
+        <a href='/api/self-improve/approve/{p["id"]}' style='color:#1D9E75;margin-right:1rem;font-weight:600;'>✅ Aprobar</a>
+        <a href='/api/self-improve/reject/{p["id"]}' style='color:#c0392b;font-weight:600;'>❌ Rechazar</a>
+        </li>"""
+        for p in pending
+    ])
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+    <html><head><meta charset="utf-8">
+    <style>body{{font-family:system-ui,sans-serif;background:#0d0f0d;color:#e3e8e4;padding:2rem;max-width:700px;margin:0 auto;}}
+    h2{{color:#1D9E75;}} a{{color:#1D9E75;}} .stat{{background:#1c1e1b;padding:.5rem 1rem;border-radius:6px;display:inline-block;margin:.3rem;}}</style>
+    <script>setTimeout(()=>location.reload(),8000);</script>
+    </head><body>
+    <h2>🤖 Sistema de Auto-mejoramiento — Orquesta AI</h2>
+    <div>
+      <span class="stat">📊 Errores registrados: <strong>{len(_error_log)}</strong></span>
+      <span class="stat">💡 Mejoras pendientes: <strong>{len(pending)}</strong></span>
+    </div>
+    <p style="color:#aaa;font-size:13px;margin-top:1rem;">
+      ⏳ Analizando errores con IA... La página se actualiza sola en 8 segundos.<br>
+      📧 Si hay mejoras, recibirás email en ms.horasoft@gmail.com.
+    </p>
+    {"<h3 style='color:#1D9E75;margin-top:1.5rem;'>💡 Mejoras detectadas</h3><ul style='padding:0;list-style:none;'>" + items + "</ul>" if pending else "<p style='color:#555;margin-top:1rem;'>Analizando... refrescá la página en unos segundos.</p>"}
+    <br><a href="/api/self-improve/pending">Ver JSON →</a> · 
+    <a href="/">Volver a Orquesta</a>
+    </body></html>""")
 
 @router.post("/orchestrate/stream")
 async def orchestrate_stream(req: OrchestrateReq, request: Request, authorization: str = Header(None)):
