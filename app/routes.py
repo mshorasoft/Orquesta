@@ -2084,8 +2084,9 @@ JSON (sin markdown):
     try:
         # Timeout explícito para no colgarse (compatible Python 3.8+)
         msgs = [{"role": "user", "content": analysis_prompt}]
+        # Llamar directamente a Groq sin fallback — evita modelos con límite bajo
         result, _ = await asyncio.wait_for(
-            groq_with_fallback(msgs, "llama-3.3-70b-versatile", use_gemini_fallback=False),
+            call_groq(msgs, "llama-3.3-70b-versatile"),
             timeout=15.0
         )
 
@@ -2255,7 +2256,7 @@ Respondé SOLO con este JSON (sin markdown):
     try:
         msgs = [{"role":"user","content":prompt}]
         result, _ = await asyncio.wait_for(
-            groq_with_fallback(msgs, "llama-3.3-70b-versatile", use_gemini_fallback=False),
+            call_groq(msgs, "llama-3.3-70b-versatile"),
             timeout=12.0
         )
         clean = result.strip()
