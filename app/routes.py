@@ -2154,7 +2154,7 @@ async def approve_improvement(proposal_id: str):
             # Obtener el contenido actual del archivo
             current_content = await get_current_routes_content()
             if current_content and old_code.strip() in current_content:
-                # Aplicar el reemplazo
+                # Aplicar el reemplazo exacto
                 updated_content = current_content.replace(old_code.strip(), new_code.strip(), 1)
                 commit_msg = f"Auto-mejora #{proposal_id}: {proposal.get('description','mejora automática')}"
                 applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
@@ -2162,8 +2162,28 @@ async def approve_improvement(proposal_id: str):
                     print(f"✅ Cambio aplicado en GitHub: {proposal_id}")
                 else:
                     error_msg = "Error al hacer commit en GitHub"
+            elif current_content:
+                # Fragmento no encontrado exacto — agregar mejora como comentario documentado
+                improvement_note = f"""
+# ── AUTO-MEJORA #{proposal_id} (pendiente de aplicar manualmente) ──────────
+# Descripción: {proposal.get('description','')}
+# Fecha: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
+# Cambio sugerido:
+# ANTES: {old_code.strip()[:200]}
+# DESPUÉS: {new_code.strip()[:200]}
+# ─────────────────────────────────────────────────────────────────────────────
+"""
+                # Agregar al final del archivo como referencia
+                updated_content = current_content + improvement_note
+                commit_msg = f"Auto-mejora #{proposal_id} (doc): {proposal.get('description','')}"
+                applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
+                if applied:
+                    print(f"✅ Mejora documentada en GitHub: {proposal_id}")
+                    error_msg = "Mejora documentada — fragmento exacto no encontrado. Requiere revisión manual."
+                else:
+                    error_msg = "No se pudo hacer commit en GitHub"
             else:
-                error_msg = "El fragmento de código no se encontró en routes.py actual"
+                error_msg = "No se pudo obtener el código actual de GitHub"
                 print(f"⚠️ {error_msg}")
         except Exception as e:
             error_msg = str(e)[:100]
