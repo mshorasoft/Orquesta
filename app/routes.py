@@ -866,11 +866,11 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         print(f"🎬 Replicate: intentando generar video con prompt: {enhanced[:80]}")
         # Usar la API v1/predictions con versiones específicas — más confiable
         replicate_models = [
-            # Wan 2.1 480p — rápido, barato, confiable
+            # Wan 2.1 480p — via modelo directo
             {
-                "url": "https://api.replicate.com/v1/predictions",
-                "version": "a36b6b8a07c8f1c6c5567ee3a7eb23eef88df880f4e1716cb9ea0f72766e9591",
-                "input": {"prompt": enhanced, "num_frames": 81, "sample_steps": 20},
+                "url": "https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-480p/predictions",
+                "version": None,
+                "input": {"prompt": enhanced, "num_frames": 81, "sample_steps": 20, "sample_guide_scale": 5},
                 "name": "wan-2.1-480p"
             },
             # Minimax Video-01 — buena calidad
