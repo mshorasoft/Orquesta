@@ -153,7 +153,10 @@ header{display:flex;align-items:center;justify-content:space-between;padding:.65
 .avatar.user{background:var(--surface3);border-radius:8px;height:30px;width:30px;align-items:center;color:var(--text2);font-size:12px;font-weight:500;overflow:hidden}
 .avatar.user img{width:100%;height:100%;object-fit:cover}
 .bubble{max-width:78%;padding:10px 14px;border-radius:12px;font-size:14px;line-height:1.75}
-.message.user .bubble{background:var(--surface2);border:1px solid var(--border2);color:var(--text);border-radius:12px 3px 12px 12px}
+.message.user .stream-cursor{display:inline-block;width:2px;height:1em;background:var(--em);margin-left:1px;animation:blink .7s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.bubble.streaming{background:var(--surface2);}
+.bubble{background:var(--surface2);border:1px solid var(--border2);color:var(--text);border-radius:12px 3px 12px 12px}
 .message.ai .bubble{background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:3px 12px 12px 12px}
 .upgrade-banner{background:linear-gradient(135deg,rgba(139,127,232,.12),rgba(139,127,232,.04));border:1px solid rgba(139,127,232,.3);border-radius:12px;padding:16px 18px;margin-top:8px}
 .upgrade-banner-title{font-size:13px;color:var(--pro);font-weight:600;margin-bottom:6px}
@@ -252,6 +255,8 @@ a{color:var(--em-mid);text-decoration:none}
 .a11y-shortcut{font-family:var(--font-mono);font-size:10px;color:var(--text3);background:var(--surface3);padding:2px 6px;border-radius:4px}
 /* Modo alto contraste */
 body.high-contrast{--carbon:#000;--surface:#111;--surface2:#1a1a1a;--surface3:#222;--text:#fff;--text2:#ddd;--border:rgba(255,255,255,.2);--border2:rgba(255,255,255,.3)}
+/* Modo claro */
+body.light-mode{--carbon:#f0f4f0;--surface:#ffffff;--surface2:#f5f7f5;--surface3:#e8ede8;--text:#1a1f1a;--text2:#333;--text3:#666;--border:rgba(0,0,0,.12);--border2:rgba(0,0,0,.2);--pro:#6B4FE8}
 /* Texto grande */
 body.large-text{font-size:18px}
 body.large-text .bubble{font-size:16px;line-height:1.9}
@@ -535,7 +540,59 @@ window.addEventListener('beforeunload', () => {
   saveLocalHistory();
 });
 
+// ── MEMORIA PERSISTENTE DE USUARIO ──────────────────────────────────────────
+let _userMemory = {};
+
+function loadUserMemory(){
+  try {
+    _userMemory = JSON.parse(localStorage.getItem('orq_memory')||'{}');
+  } catch(e){ _userMemory = {}; }
+}
+
+function saveUserMemory(key, value){
+  _userMemory[key] = value;
+  localStorage.setItem('orq_memory', JSON.stringify(_userMemory));
+}
+
+function getUserMemoryContext(){
+  if(!_userMemory || Object.keys(_userMemory).length === 0) return '';
+  const items = Object.entries(_userMemory).map(([k,v])=>`${k}: ${v}`).join(', ');
+  return `Contexto del usuario: ${items}`;
+}
+
+// Exportar conversación como texto
+function exportConversation(){
+  if(!activeHistory.length){ showToast('No hay conversación para exportar','warn'); return; }
+  const text = activeHistory.map(m => 
+    `${m.role === 'user' ? '👤 Vos' : '🤖 Orquesta'}: ${m.content}`
+  ).join('\n\n');
+  const blob = new Blob([text], {type:'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `orquesta-${Date.now()}.txt`; a.click();
+  URL.revokeObjectURL(url);
+  showToast('✅ Conversación exportada','info');
+}
+
+// Compartir conversación
+async function shareConversation(){
+  if(!activeHistory.length){ showToast('No hay conversación para compartir','warn'); return; }
+  if(navigator.share){
+    try {
+      await navigator.share({
+        title: 'Conversación con Orquesta AI',
+        text: activeHistory.slice(-4).map(m=>`${m.role==='user'?'Vos':'Orquesta'}: ${m.content.slice(0,100)}`).join('\n'),
+        url: window.location.href
+      });
+    } catch(e){}
+  } else {
+    navigator.clipboard.writeText(window.location.href);
+    showToast('🔗 Link copiado al portapapeles','info');
+  }
+}
+
 window.addEventListener('load', async () => {
+  loadUserMemory();
   if (sb) {
     const { data: { session } } = await sb.auth.getSession();
     if (session) {
@@ -1140,6 +1197,64 @@ async function toggleMic(){
 // ══════════════════════════════════════════════════════════════
 //  SEND
 // ══════════════════════════════════════════════════════════════
+async function sendStreaming(prompt, mode, headers){
+  // Streaming para respuestas de texto — tokens aparecen en tiempo real
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'message ai';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble streaming';
+  bubble.innerHTML = '<span class="stream-cursor">▋</span>';
+  msgDiv.appendChild(bubble);
+  document.getElementById('messages').appendChild(msgDiv);
+  document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+
+  let fullText = '';
+  try {
+    const res = await fetch('/api/orchestrate/stream', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', ...headers},
+      body: JSON.stringify({
+        prompt, history: activeHistory, mode,
+        username: userProfile?.name||'',
+        user_plan: userProfile?.plan||'free',
+        user_id: userProfile?.id||currentUser?.id||'',
+        auth_id: currentUser?.id||''
+      })
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    while(true){
+      const {done, value} = await reader.read();
+      if(done) break;
+      const lines = decoder.decode(value).split('\n');
+      for(const line of lines){
+        if(!line.startsWith('data: ')) continue;
+        try {
+          const d = JSON.parse(line.slice(6));
+          if(d.text) {
+            fullText += d.text;
+            bubble.innerHTML = marked.parse(fullText) + '<span class="stream-cursor">▋</span>';
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+          }
+          if(d.done) {
+            bubble.innerHTML = marked.parse(fullText);
+            bubble.classList.remove('streaming');
+            activeHistory.push({role:'assistant', content: fullText});
+            saveLocalHistory();
+            setBadge('groq · streaming');
+            return fullText;
+          }
+        } catch(e){}
+      }
+    }
+  } catch(err){
+    bubble.innerHTML = `❌ Error streaming: ${err.message}`;
+  }
+  return fullText;
+}
+
 async function send(){
   if(loading)return;
   const inp=document.getElementById('prompt-input');
@@ -1210,7 +1325,8 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     }
     // Contar pregunta en plan free
     if(!(isPro() || userProfile?.is_pro || userProfile?.plan === 'pro')) incFreeCount();
-    console.log('RESPUESTA BACKEND:', JSON.stringify({result:data.result?.slice(0,100), model_label:data.model_label, latency_ms:data.latency_ms, upgrade_banner:data.upgrade_banner}));
+    // Log solo en desarrollo
+    if(window.location.hostname === 'localhost') console.log('RESPUESTA BACKEND:', JSON.stringify({result:data.result?.slice(0,100), model_label:data.model_label, latency_ms:data.latency_ms}));
     setBadge(data.model_label);
     document.getElementById('typing-msg')?.remove();
     const fileData=data.file_url?{url:data.file_url,type:data.file_type,name:data.file_name}:null;
@@ -1253,6 +1369,10 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
   <div class="a11y-row">
     <span>Alto contraste</span>
     <button class="a11y-toggle" id="toggle-contrast" onclick="toggleContrast()" aria-label="Alto contraste"></button>
+  </div>
+  <div class="a11y-row">
+    <span>Modo claro</span>
+    <button class="a11y-toggle" id="toggle-light" onclick="toggleLightMode()" aria-label="Modo claro"></button>
   </div>
   <div class="a11y-row">
     <span>Texto grande</span>
