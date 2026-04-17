@@ -755,7 +755,8 @@ async def groq_with_fallback(messages, model, use_gemini_fallback=True):
         return await call_groq(messages, model), model
     except Exception:
         try:
-            alt = "llama-3.3-70b-versatile" if model != "llama-3.3-70b-versatile" else "llama-3.1-8b-instant"
+            # Usar modelo alternativo con mayor límite de tokens
+            alt = "llama-3.3-70b-versatile" if model != "llama-3.3-70b-versatile" else "llama3-70b-8192"
             return await call_groq(messages, alt), alt
         except Exception:
             if GEMINI_KEY and use_gemini_fallback:
@@ -2072,14 +2073,13 @@ async def analyze_and_propose_improvements():
     recent_errors = _error_log[-10:]  # Solo últimos 10 para ser más rápido
     error_summary = "\n".join([f"- {e['endpoint']}: {e['error'][:100]}" for e in recent_errors])
 
-    # Prompt simple y directo — sin código fuente para evitar timeouts
-    analysis_prompt = f"""Analizá estos errores de Orquesta AI y proponé UNA mejora concreta.
+    # Prompt corto para no exceder límite de tokens
+    errors_short = "\n".join([f"- {e['endpoint']}: {e['error'][:60]}" for e in _error_log[-5:]])
+    analysis_prompt = f"""Errores en Orquesta AI:
+{errors_short}
 
-Errores detectados:
-{error_summary}
-
-Respondé SOLO con JSON válido (sin markdown, sin texto extra):
-{{"type":"bug_fix","description":"descripción corta en español","impact":"alto","code_summary":"qué cambiaría en el código","old_code":"fragmento a reemplazar","new_code":"código nuevo","safe_to_auto_apply":true}}"""
+JSON (sin markdown):
+{{"type":"bug_fix","description":"mejora en español","impact":"alto","code_summary":"cambio sugerido","old_code":"fragmento","new_code":"código nuevo","safe_to_auto_apply":true}}"""
 
     try:
         # Timeout explícito para no colgarse (compatible Python 3.8+)
