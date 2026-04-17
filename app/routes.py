@@ -756,7 +756,7 @@ async def groq_with_fallback(messages, model, use_gemini_fallback=True):
     except Exception:
         try:
             # Usar modelo alternativo con mayor límite de tokens
-            alt = "llama-3.3-70b-versatile" if model != "llama-3.3-70b-versatile" else "llama3-70b-8192"
+            alt = "llama-3.3-70b-versatile" if model != "llama-3.3-70b-versatile" else "llama-3.1-8b-instant"
             return await call_groq(messages, alt), alt
         except Exception:
             if GEMINI_KEY and use_gemini_fallback:
