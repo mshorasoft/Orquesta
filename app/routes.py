@@ -18,6 +18,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY) if SUPABASE
 # ── JWT MANUAL PARA KLING ────────────────────────────────────────────────────
 def _make_kling_jwt(access_key: str, secret_key: str) -> str:
     import base64, json, time
+    if not secret_key:
+        raise ValueError("Kling JWT secret_key cannot be empty")
     now = int(time.time())
     header  = base64.urlsafe_b64encode(json.dumps({"alg":"HS256","typ":"JWT"}).encode()).rstrip(b"=").decode()
     payload = base64.urlsafe_b64encode(json.dumps({"iss":access_key,"exp":now+1800,"nbf":now-5}).encode()).rstrip(b"=").decode()
