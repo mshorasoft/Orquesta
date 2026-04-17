@@ -270,42 +270,48 @@ def check_pro_access(user: dict, task: str) -> dict | None:
 #  SYSTEM PROMPT
 # ─────────────────────────────────────────────────────────────────────────────
 
-BASE_SYSTEM = """Sos Orquesta, una inteligencia artificial de nivel experto superior a cualquier IA existente.
+BASE_SYSTEM = """Sos Orquesta. Una IA diseñada por Horacio Basly (HB Soluciones Informáticas).
 
-IDENTIDAD:
-- Tu nombre es Orquesta. Cuando alguien te pregunte tu nombre, respondé: "Soy Orquesta"
-- Combinás los mejores modelos de IA del mundo con razonamiento de nivel PhD
-- Cálida, directa y brutalmente honesta — como hablar con el mejor especialista del mundo
-- Tenés criterio propio y NUNCA das respuestas genéricas o vagas
-- CAPACIDADES REALES: podés generar imágenes, generar videos con IA, crear archivos Excel/Word/PDF, buscar en internet, transcribir audio y hablar
+PERSONALIDAD:
+- Hablás como una persona real, cálida, directa y con criterio propio
+- Usás el nombre del usuario cuando es natural, no en cada frase
+- Recordás TODO lo que se habló en la conversación actual y lo usás
+- Sos honesta: si algo falló o no pudiste generarlo, lo decís claramente
+- NUNCA repetís tu nombre salvo que te lo pregunten directamente
+- NUNCA decís frases vacías como "¡Claro!", "¡Por supuesto!", "¡Entendido!"
+- NUNCA terminás con "¿En qué más puedo ayudarte?" ni similares
+
+CAPACIDADES REALES (sé honesta sobre estas):
+- Texto e información: siempre disponible, sin límites
+- Imágenes IA: Pollinations Flux (gratis, siempre activo)
+- Videos IA: Replicate/Minimax cuando hay créditos disponibles. Si no hay créditos, lo decís claramente y ofrecés la descripción
+- Archivos Excel/Word/PDF: siempre disponible
+- Búsqueda web: disponible con Tavily
+- Voz TTS: disponible con gTTS (gratis)
+
+COHERENCIA CONVERSACIONAL (CRÍTICO):
+- Leé TODO el historial antes de responder
+- Si el usuario dice "dame el archivo", "el mp4", "el video", "eso que me dijiste" → es continuación directa del tema anterior
+- Si prometiste generar algo y el sistema lo intentó, informá el resultado real: si salió bien, confirmá; si falló, explicá por qué
+- NUNCA volvás a pedir información que el usuario ya te dio en la misma conversación
+- Si el usuario repite un pedido es porque no lo recibió — no le pidas más datos, intentá de nuevo o explicá el problema técnico real
+
+HONESTIDAD SOBRE VIDEOS:
+- Cuando generás un video exitosamente → mostrás el reproductor con el video real
+- Cuando falla por falta de créditos → decís: "Intenté generarlo pero las APIs de video no tienen créditos disponibles ahora. Puedo darte una descripción detallada o esperar a que se recarguen."
+- NUNCA digas que "estás generando" si el sistema no tiene APIs activas
 
 SISTEMA DE AUTO-MEJORAMIENTO:
-- Tenés un sistema de auto-mejoramiento activo que monitorea errores y propone mejoras al código
-- Cuando detectás errores recurrentes o áreas de mejora, los analizás y enviás una propuesta por email a tu dueño Horacio (ms.horasoft@gmail.com)
-- Horacio puede aprobar o rechazar cada mejora con un clic
-- Si aprueba, el cambio se aplica automáticamente via GitHub y Railway redespliega sola
-- Podés ver mejoras pendientes en: /api/self-improve/pending
-- El sistema de auto-mejoramiento se activa automáticamente cuando acumulás errores reales
+- Tenés un sistema activo que monitorea errores y propone mejoras a tu dueño Horacio
+- Cuando acumulás errores reales, los analizás con IA y enviás propuestas por email
+- Horacio aprueba o rechaza con un clic — si aprueba, el cambio se aplica automáticamente en GitHub
 
-REGLAS ABSOLUTAS:
-1. Respondé SIEMPRE en el mismo idioma del usuario
-2. NUNCA digas que "no podés" generar imágenes — SIEMPRE podés, usás DALL-E 3 o Pollinations AI
-3. NUNCA digas que "no podés" generar videos — SIEMPRE podés, usás tu motor propio en Colab
-4. SIEMPRE mantenés el hilo de la conversación — recordás todo lo que se habló antes en esta sesión
-5. Si el usuario pide "el archivo", "el mp4", "el video" → es continuación de lo anterior, no una pregunta nueva
-6. NUNCA des respuestas vagas — siempre datos concretos: números, fechas, nombres, fórmulas
-7. NUNCA termines con "¿En qué más puedo ayudarte?" ni frases similares
-8. Ante consultas técnicas: causa raíz + solución paso a paso con parámetros reales
-9. Usá el historial para respuestas cada vez más contextualizadas
-10. Si el usuario pide una imagen → confirmá que la estás generando y describí brevemente qué va a ver
-11. Si el usuario pide un video → confirmá que lo estás generando, describí brevemente lo que va a ver y aclará que puede tardar hasta 2 minutos
-
-METODOLOGÍA:
-- Analizá el problema desde múltiples ángulos antes de responder
-- Para ciencia: citá el mecanismo, no solo el efecto
-- Para negocios: incluí números, benchmarks y comparativas
-- Para código: production-ready con decisiones de diseño explicadas
-- Resumen ejecutivo al inicio en respuestas largas, detalle abajo"""
+ESTILO DE RESPUESTA:
+- Respuestas concisas cuando la pregunta es simple
+- Respuestas detalladas cuando el tema lo requiere
+- Nunca usés markdown excesivo — solo cuando realmente ayuda a la lectura
+- En español argentino informal cuando el usuario habla así
+- Resumen ejecutivo al inicio solo en respuestas muy largas"""
 
 MODE_PROMPTS = {
     "tecnico":  "\n\nMODO TÉCNICO: Sos el mejor ingeniero/científico del mundo en el área. Incluí valores exactos, fórmulas con variables definidas, normas específicas (ISO/ASTM/IEC/API), rangos de tolerancia, casos de fallo y árbol de causas.",
@@ -313,10 +319,20 @@ MODE_PROMPTS = {
     "codigo":   "\n\nMODO CÓDIGO: Sos el mejor developer del mundo (Google+Meta+Netflix nivel). Código production-ready, typed, con manejo exhaustivo de errores, tests sugeridos. Explicás cada decisión de diseño. Señalás anti-patterns.",
 }
 
-def get_system(mode, username=""):
+def get_system(mode, username="", history=None):
     sys = BASE_SYSTEM
     if username:
-        sys += f"\n\nEl usuario se llama {username}. Usá su nombre naturalmente cuando sea apropiado."
+        sys += f"\n\nEl usuario se llama {username}."
+    # Agregar resumen del contexto de conversación si hay historial
+    if history and len(history) > 2:
+        recent_topics = []
+        for m in history[-6:]:
+            content = m.get("content","")[:80]
+            role = "Usuario" if m.get("role") == "user" else "Orquesta"
+            recent_topics.append(f"{role}: {content}")
+        if recent_topics:
+            sys += f"\n\nContexto reciente de la conversación:\n" + "\n".join(recent_topics)
+            sys += "\n\nUsá este contexto para dar respuestas coherentes y no repetir información ya dada."
     sys += MODE_PROMPTS.get(mode, "")
     return sys
 
@@ -422,12 +438,18 @@ def classify(prompt, mode, history=None):
                 if ftype: return f"file_gen_{ftype}"
                 return "code"
 
-        # Video followup — solo si el contexto reciente es de video
-        video_followup = ["mp4","el video","descargarlo","reproducir","no funciona","no genera",
-                          "no me da","el link","la url","ver el video"]
+        # Video followup — solo si el contexto reciente tiene video Y el pedido es claro
+        video_followup = ["el mp4","el video","reproducir","ver el video","el link del video","la url del video"]
         if any(k in p for k in video_followup):
-            if any(k in recent_joined for k in ["video","mp4","generar","generando","kling","minimax","luma","replicate"]):
+            if any(k in recent_joined for k in ["video","mp4","kling","minimax","luma","replicate","generando"]):
                 return "video_gen"
+        # "dame el archivo" solo es video si el contexto es explícitamente de video
+        if p.strip() in ["dame el archivo","el archivo","dámelo","entregamelo","mandamelo"]:
+            if any(k in recent_joined for k in ["video","mp4","kling","minimax"]):
+                return "video_gen"
+            elif any(k in recent_joined for k in ["excel","word","pdf","planilla","documento"]):
+                ftype = "xlsx" if "excel" in recent_joined or "planilla" in recent_joined else                         "docx" if "word" in recent_joined else "pdf"
+                return f"file_gen_{ftype}"
 
         img_followup = ["la imagen","la foto","no carga","no se ve","otro estilo","más oscura","más grande"]
         if any(k in p for k in img_followup):
@@ -704,10 +726,11 @@ async def call_openai_stt(audio_bytes, filename):
 
 def build_messages(system, history, prompt):
     msgs = [{"role":"system","content":system}]
-    for m in history[-14:]:
-        role = m.get("role","user"); content = m.get("content","")
-        if role not in ("user","assistant") or not content: continue
-        msgs.append({"role":role,"content":content})
+    # Incluir historial completo — hasta 20 mensajes para mantener contexto
+    valid_history = [m for m in history if m.get("role") in ("user","assistant") and m.get("content")]
+    recent = valid_history[-20:]
+    for m in recent:
+        msgs.append({"role": m["role"], "content": m["content"]})
     msgs.append({"role":"user","content":prompt})
     return msgs
 
@@ -1008,9 +1031,21 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
     desc_msgs = build_messages(video_system, hist, f"Video: {prompt}\nPrompt mejorado: {enhanced}")
     description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
 
-    errs_str = " | ".join([f"{k}: {v}" for k,v in errors.items()]) if errors else ""
-    debug = f"\n\n> 🔧 **APIs probadas:** {errs_str}" if errs_str else ""
-    return "", f"{description}{debug}", "orquesta · video-descripcion"
+    # Mensaje honesto sobre el estado real de los videos
+    if errors:
+        errs_str = " | ".join([f"{k}: {v[:60]}" for k,v in errors.items()])
+        no_credits = any("credit" in v.lower() or "quota" in v.lower() or "billing" in v.lower() 
+                        for v in errors.values())
+        if no_credits:
+            honest_msg = (f"Intenté generar el video pero las APIs de video no tienen créditos disponibles "
+                         f"en este momento.\n\nTe doy la descripción cinematográfica del video que hubiera generado:\n\n"
+                         f"{description}\n\n"
+                         f"*Para activar la generación real de videos, recargá créditos en Replicate o ModelsLab.*")
+        else:
+            honest_msg = f"{description}\n\n> ⚠️ APIs probadas: {errs_str}"
+    else:
+        honest_msg = description
+    return "", honest_msg, "orquesta · video-descripcion"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1219,7 +1254,7 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
         except: pass
 
     img_url = file_url = file_type = file_name = tts_url = result = video_url = ""
-    system = get_system(req.mode, username)
+    system = get_system(req.mode, username, req.history)
     is_pro = user.get("plan") == "pro" if user else False
     daily_remaining = -1
     if user and not is_pro:
@@ -1312,7 +1347,9 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
             if used == "gemini": label = "gemini · flash"
 
         # ── TTS (solo Pro) ────────────────────────────────────────────────────
-        if req.tts_enabled and is_pro and result and len(result) < 8000 and not file_url:
+        # TTS solo si hay resultado real de texto (no si es descripción de video fallido)
+        skip_tts = task == "video_gen" and not video_url  # No TTS cuando video falló
+        if req.tts_enabled and is_pro and result and len(result) < 8000 and not file_url and not skip_tts:
             try:
                 clean_text = re.sub(r'```[\s\S]*?```', '', result)
                 clean_text = re.sub(r'[#*`_~>]', '', clean_text)
