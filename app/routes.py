@@ -425,6 +425,20 @@ def classify(prompt, mode, history=None):
     if mode == "tecnico":  return "technical"
     p = prompt.lower()
 
+    # DETECCIÓN TEMPRANA: quejas, feedback, errores detectados → siempre general
+    feedback_kw = [
+        "detecté", "detecte", "encontré", "encontre", "noté", "note",
+        "hay un error", "tiene un error", "está fallando", "esta fallando",
+        "no funciona", "no está funcionando", "problema con", "falla en",
+        "necesito que analices", "analiza estos errores", "propone una mejora",
+        "no son premium", "son básicos", "son basicos", "son malos",
+        "mala calidad", "no me gusta", "mejorar esto", "esto está mal",
+        "esto esta mal", "necesito que mejores", "autorepara", "auto-repara",
+        "autorepar", "funcionamiento", "errores en tu", "errores en mi"
+    ]
+    if any(k in p for k in feedback_kw):
+        return "general"  # Feedback/queja siempre va a chat general
+
     if history:
         recent = [m.get("content","").lower() for m in history[-4:]]
         recent_joined = " ".join(recent)
