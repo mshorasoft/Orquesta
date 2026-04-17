@@ -1397,7 +1397,9 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
                 pass
 
         # ── Guardar en Supabase ────────────────────────────────────────────────
-        if user and req.conversation_id and supabase:
+        # Solo guardar en Supabase si el conversation_id es un UUID válido (no sesión local)
+        is_valid_uuid = req.conversation_id and not req.conversation_id.startswith("session_") and len(req.conversation_id) == 36
+        if user and is_valid_uuid and supabase:
             try:
                 supabase.table("messages").insert({
                     "conversation_id": req.conversation_id,
@@ -2083,7 +2085,7 @@ Respondé SOLO con JSON válido (sin markdown, sin texto extra):
         # Timeout explícito para no colgarse (compatible Python 3.8+)
         msgs = [{"role": "user", "content": analysis_prompt}]
         result, _ = await asyncio.wait_for(
-            groq_with_fallback(msgs, "llama-3.3-70b-versatile"),
+            groq_with_fallback(msgs, "llama-3.3-70b-versatile", use_gemini_fallback=False),
             timeout=15.0
         )
 
@@ -2233,7 +2235,7 @@ Respondé SOLO con este JSON (sin markdown):
     try:
         msgs = [{"role":"user","content":prompt}]
         result, _ = await asyncio.wait_for(
-            groq_with_fallback(msgs, "llama-3.3-70b-versatile"),
+            groq_with_fallback(msgs, "llama-3.3-70b-versatile", use_gemini_fallback=False),
             timeout=12.0
         )
         clean = result.strip()
