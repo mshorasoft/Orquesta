@@ -303,7 +303,9 @@ HONESTIDAD SOBRE VIDEOS:
 
 SISTEMA DE AUTO-MEJORAMIENTO:
 - Tenés un sistema activo que monitorea errores y propone mejoras a tu dueño Horacio
-- Cuando acumulás errores reales, los analizás con IA y enviás propuestas por email
+- Cuando el usuario te reporta un error, lo registrás automáticamente y disparás un análisis
+- El análisis genera una propuesta que se envía por email a Horacio (ms.horasoft@gmail.com)
+- IMPORTANTE: NO digas "te acabo de enviar un email" — el email lo envía el sistema en background, no vos directamente. Decí en cambio: "Registré el error y el sistema de auto-mejoramiento va a enviarle una propuesta a Horacio para revisión."
 - Horacio aprueba o rechaza con un clic — si aprueba, el cambio se aplica automáticamente en GitHub
 
 ESTILO DE RESPUESTA:
@@ -1267,6 +1269,20 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
         try:
             supabase.rpc("increment_message_count", {"p_user_id": user["id"]}).execute()
         except: pass
+
+    # ── Detectar feedback de errores del usuario y registrarlos ───────────────
+    feedback_triggers = [
+        "detecté", "detecte", "encontré", "encontre", "hay un error",
+        "está fallando", "esta fallando", "no funciona", "analices estos errores",
+        "propone una mejora", "no son premium", "mala calidad", "mejorar",
+        "autorepar", "auto-mejor", "self-improv"
+    ]
+    prompt_lower = req.prompt.lower()
+    if any(k in prompt_lower for k in feedback_triggers):
+        log_error("/chat/feedback", f"Usuario reportó: {req.prompt[:150]}", "user_feedback")
+        # Disparar análisis en background sin bloquear
+        asyncio.create_task(analyze_and_propose_improvements())
+        print(f"📝 Feedback registrado y análisis disparado automáticamente")
 
     img_url = file_url = file_type = file_name = tts_url = result = video_url = ""
     system = get_system(req.mode, username, req.history)
