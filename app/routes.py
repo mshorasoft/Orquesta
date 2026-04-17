@@ -243,6 +243,14 @@ IDENTIDAD:
 - Tenés criterio propio y NUNCA das respuestas genéricas o vagas
 - CAPACIDADES REALES: podés generar imágenes, generar videos con IA, crear archivos Excel/Word/PDF, buscar en internet, transcribir audio y hablar
 
+SISTEMA DE AUTO-MEJORAMIENTO:
+- Tenés un sistema de auto-mejoramiento activo que monitorea errores y propone mejoras al código
+- Cuando detectás errores recurrentes o áreas de mejora, los analizás y enviás una propuesta por email a tu dueño Horacio (ms.horasoft@gmail.com)
+- Horacio puede aprobar o rechazar cada mejora con un clic
+- Si aprueba, el cambio se aplica automáticamente via GitHub y Railway redespliega sola
+- Podés ver mejoras pendientes en: /api/self-improve/pending
+- El sistema de auto-mejoramiento se activa automáticamente cuando acumulás errores reales
+
 REGLAS ABSOLUTAS:
 1. Respondé SIEMPRE en el mismo idioma del usuario
 2. NUNCA digas que "no podés" generar imágenes — SIEMPRE podés, usás DALL-E 3 o Pollinations AI
@@ -1854,7 +1862,7 @@ async def send_improvement_email(proposal: dict) -> bool:
                     headers={"Authorization": f"Bearer {SENDGRID_KEY}", "Content-Type": "application/json"},
                     json={
                         "personalizations": [{"to": [{"email": OWNER_EMAIL}]}],
-                        "from": {"email": "orquesta@noreply.com", "name": "Orquesta AI"},
+                        "from": {"email": "ms.horasoft@gmail.com", "name": "Orquesta AI"},
                         "subject": f"🤖 Orquesta propone mejora: {proposal['type']}",
                         "content": [{"type": "text/html", "value": html_body}]
                     }
@@ -2014,10 +2022,37 @@ async def reject_improvement(proposal_id: str):
     """)
 
 @router.post("/self-improve/trigger")
-async def trigger_analysis():
-    """Dispara un análisis manual de mejoras (solo para testing)."""
+async def trigger_analysis_post():
+    """Dispara un análisis manual de mejoras via POST."""
+    # Agregar algunos errores de ejemplo si no hay ninguno para probar
+    if not _error_log:
+        log_error("/api/orchestrate", "JWT verify failed — Token inválido", "auth")
+        log_error("/api/stt", "Quota exceeded — OpenAI sin créditos", "stt")
+        log_error("/api/orchestrate", "Gemini 503 UNAVAILABLE — model saturado", "vision")
     await analyze_and_propose_improvements()
-    return {"status": "analysis_triggered", "errors_analyzed": len(_error_log)}
+    return {"status": "analysis_triggered", "errors_analyzed": len(_error_log), "pending": len(_pending_improvements)}
+
+@router.get("/self-improve/trigger")
+async def trigger_analysis_get():
+    """Dispara un análisis manual via GET (para probar desde el browser)."""
+    if not _error_log:
+        log_error("/api/orchestrate", "JWT verify failed — Token inválido", "auth")
+        log_error("/api/stt", "Quota exceeded — OpenAI sin créditos", "stt")
+        log_error("/api/orchestrate", "Gemini 503 UNAVAILABLE — model saturado", "vision")
+    await analyze_and_propose_improvements()
+    from fastapi.responses import HTMLResponse
+    pending = list(_pending_improvements.values())
+    items = "".join([f"<li style='margin:.5rem 0'><strong>{p.get('type','')}</strong>: {p.get('description','')} — <a href='/api/self-improve/approve/{p['id']}' style='color:#1D9E75'>✅ Aprobar</a> · <a href='/api/self-improve/reject/{p['id']}' style='color:#c0392b'>❌ Rechazar</a></li>" for p in pending])
+    return HTMLResponse(f"""
+    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;padding:2rem;max-width:700px;margin:0 auto;">
+    <h2 style="color:#1D9E75;">🤖 Sistema de Auto-mejoramiento</h2>
+    <p>Errores analizados: <strong>{len(_error_log)}</strong></p>
+    <p>Mejoras pendientes: <strong>{len(pending)}</strong></p>
+    <p style="color:#aaa;font-size:13px;">Se envió email de notificación a ms.horasoft@gmail.com</p>
+    {"<ul>" + items + "</ul>" if pending else "<p style='color:#aaa'>Sin mejoras pendientes aún — esperando acumulación de errores reales.</p>"}
+    <br><a href="/api/self-improve/pending" style="color:#1D9E75;">Ver JSON completo →</a>
+    </body></html>
+    """)
 
 @router.get("/status")
 async def status():
