@@ -1908,44 +1908,65 @@ async def apply_github_change(filename: str, new_content: str, commit_msg: str) 
         print(f"GitHub apply error: {e}")
         return False
 
+async def get_current_routes_content() -> str:
+    """Obtiene el contenido actual de routes.py desde GitHub."""
+    if not GITHUB_TOKEN:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(
+                f"https://api.github.com/repos/{GITHUB_REPO}/contents/app/routes.py",
+                headers={"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+            )
+            if r.is_success:
+                import base64 as _b64
+                return _b64.b64decode(r.json()["content"]).decode("utf-8")
+    except Exception as e:
+        print(f"Error obteniendo routes.py: {e}")
+    return ""
+
 async def analyze_and_propose_improvements():
-    """Analiza errores recientes y propone mejoras usando IA."""
+    """Analiza errores recientes y propone mejoras usando IA con código real."""
     if not _error_log and not _feedback_log:
         return
-    
-    # Preparar contexto de errores
+
     recent_errors = _error_log[-20:]
     error_summary = "\n".join([f"- {e['endpoint']}: {e['error']}" for e in recent_errors])
 
-    
+    # Obtener el código actual para que la IA proponga cambios reales
+    current_code = await get_current_routes_content()
+    code_context = f"\n\nCódigo actual (primeras 3000 chars):\n{current_code[:3000]}" if current_code else ""
+
     analysis_prompt = f"""Sos el sistema de auto-análisis de Orquesta AI.
-    
+
 Errores recientes detectados:
-{error_summary}
+{error_summary}{code_context}
 
-Analizá estos errores y proponé UNA mejora específica y concreta que pueda implementarse en el código Python/FastAPI.
-La mejora debe ser:
-1. Pequeña y segura (no romper funcionalidad existente)
-2. Resolver un problema real de los errores listados
-3. Describible en 2-3 líneas de código
+Analizá estos errores y proponé UNA mejora específica con el código exacto a cambiar.
+La mejora debe ser PEQUEÑA y SEGURA.
 
-Respondé SOLO en JSON con este formato exacto:
+Respondé SOLO en JSON con este formato exacto (sin markdown):
 {{
   "type": "bug_fix|performance|new_feature",
-  "description": "descripción breve en español",
+  "description": "descripción breve en español de qué se corrige",
   "impact": "alto|medio|bajo",
-  "code_summary": "descripción del cambio de código en 1-2 líneas",
-  "safe_to_auto_apply": true/false
+  "code_summary": "qué líneas cambian y por qué",
+  "old_code": "el fragmento EXACTO de código a reemplazar (máx 5 líneas)",
+  "new_code": "el código nuevo que lo reemplaza (máx 8 líneas)",
+  "safe_to_auto_apply": true
 }}"""
 
     try:
         msgs = [{"role": "user", "content": analysis_prompt}]
         result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
-        
-        # Limpiar y parsear JSON
         clean = result.replace("```json", "").replace("```", "").strip()
+        # Extraer solo el JSON
+        start = clean.find("{")
+        end = clean.rfind("}") + 1
+        if start >= 0 and end > start:
+            clean = clean[start:end]
         proposal_data = json.loads(clean)
-        
+
         proposal_id = str(uuid.uuid4())[:8]
         proposal = {
             "id": proposal_id,
@@ -1953,11 +1974,11 @@ Respondé SOLO en JSON con este formato exacto:
             "status": "pending",
             **proposal_data
         }
-        
+
         _pending_improvements[proposal_id] = proposal
         await send_improvement_email(proposal)
         print(f"✅ Mejora propuesta: {proposal_id} - {proposal_data.get('description','')}")
-        
+
     except Exception as e:
         print(f"Auto-analyze error: {e}")
 
@@ -1975,31 +1996,56 @@ async def get_pending_improvements():
 
 @router.get("/self-improve/approve/{proposal_id}")
 async def approve_improvement(proposal_id: str):
-    """Aprueba una mejora propuesta — redirige a página de confirmación."""
+    """Aprueba y aplica automáticamente una mejora via GitHub."""
+    from fastapi.responses import HTMLResponse
+
     if proposal_id not in _pending_improvements:
-        return {"error": "Propuesta no encontrada"}
-    
+        return HTMLResponse("<html><body style='font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;padding:2rem;'><h2 style='color:#c0392b;'>❌ Propuesta no encontrada o ya procesada</h2></body></html>")
+
     proposal = _pending_improvements[proposal_id]
     proposal["status"] = "approved"
     proposal["approved_at"] = datetime.now(timezone.utc).isoformat()
-    
-    # Notificar que fue aprobada
     print(f"✅ MEJORA APROBADA: {proposal_id} - {proposal.get('description','')}")
-    
-    # Si es seguro aplicar automáticamente, hacerlo
-    if proposal.get("safe_to_auto_apply"):
-        print(f"Aplicando automáticamente: {proposal_id}")
-        # Aquí iría la lógica de aplicar el cambio
-        # Por ahora solo marcamos como aprobada y notificamos
-    
-    # Retornar HTML de confirmación
-    from fastapi.responses import HTMLResponse
+
+    applied = False
+    error_msg = ""
+
+    # Aplicar el cambio en GitHub si hay old_code y new_code
+    old_code = proposal.get("old_code", "")
+    new_code = proposal.get("new_code", "")
+
+    if old_code and new_code and GITHUB_TOKEN:
+        try:
+            # Obtener el contenido actual del archivo
+            current_content = await get_current_routes_content()
+            if current_content and old_code.strip() in current_content:
+                # Aplicar el reemplazo
+                updated_content = current_content.replace(old_code.strip(), new_code.strip(), 1)
+                commit_msg = f"Auto-mejora #{proposal_id}: {proposal.get('description','mejora automática')}"
+                applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
+                if applied:
+                    print(f"✅ Cambio aplicado en GitHub: {proposal_id}")
+                else:
+                    error_msg = "Error al hacer commit en GitHub"
+            else:
+                error_msg = "El fragmento de código no se encontró en routes.py actual"
+                print(f"⚠️ {error_msg}")
+        except Exception as e:
+            error_msg = str(e)[:100]
+            print(f"❌ Error aplicando cambio: {e}")
+
+    status_color = "#1D9E75" if applied else "#f39c12"
+    status_icon = "✅" if applied else "⚠️"
+    status_msg = "Cambio aplicado automáticamente en GitHub. Railway redesplegará en ~2 minutos." if applied else f"Mejora registrada pero no aplicada automáticamente. {error_msg}"
+
     return HTMLResponse(f"""
-    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
-    <div style="text-align:center;padding:2rem;">
-      <h1 style="color:#1D9E75;">✅ Mejora aprobada</h1>
-      <p>{proposal.get('description','')}</p>
-      <p style="color:#3d4e3e;font-size:13px;">Orquesta implementará el cambio en el próximo ciclo de análisis.</p>
+    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;">
+    <div style="text-align:center;padding:2rem;max-width:500px;">
+      <h1 style="color:{status_color};">{status_icon} Mejora aprobada</h1>
+      <p style="font-size:15px;">{proposal.get('description','')}</p>
+      <p style="color:#aaa;font-size:13px;margin-top:1rem;">{status_msg}</p>
+      {"<p style='color:#1D9E75;font-size:12px;'>🚀 Railway redesplegará automáticamente en ~2 minutos</p>" if applied else ""}
+      <a href="/api/self-improve/pending" style="display:inline-block;margin-top:1.5rem;color:#1D9E75;font-size:13px;">Ver todas las mejoras →</a>
     </div></body></html>
     """)
 
