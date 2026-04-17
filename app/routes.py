@@ -2073,13 +2073,10 @@ async def analyze_and_propose_improvements():
     recent_errors = _error_log[-10:]  # Solo últimos 10 para ser más rápido
     error_summary = "\n".join([f"- {e['endpoint']}: {e['error'][:100]}" for e in recent_errors])
 
-    # Prompt corto para no exceder límite de tokens
-    errors_short = "\n".join([f"- {e['endpoint']}: {e['error'][:60]}" for e in _error_log[-5:]])
-    analysis_prompt = f"""Errores en Orquesta AI:
-{errors_short}
-
-JSON (sin markdown):
-{{"type":"bug_fix","description":"mejora en español","impact":"alto","code_summary":"cambio sugerido","old_code":"fragmento","new_code":"código nuevo","safe_to_auto_apply":true}}"""
+    # Prompt MÍNIMO para no gastar tokens
+    top_error = _error_log[-1] if _error_log else {"endpoint": "general", "error": "mejora general"}
+    analysis_prompt = f'''Error: {top_error["endpoint"]}: {top_error["error"][:80]}
+Respondé SOLO con JSON: {{"type":"bug_fix","description":"fix en español","impact":"alto","code_summary":"cambio","old_code":"x","new_code":"y","safe_to_auto_apply":true}}'''  
 
     try:
         # Timeout explícito para no colgarse (compatible Python 3.8+)
@@ -2246,12 +2243,9 @@ async def trigger_analysis_get():
         log_error("/api/orchestrate", "video_gen no credits", "video")
 
     # Hacer el análisis directamente con timeout corto
-    error_summary = "\n".join([f"- {e['endpoint']}: {e['error'][:80]}" for e in _error_log[-5:]])
-    prompt = f"""Errores en Orquesta AI:
-{error_summary}
-
-Respondé SOLO con este JSON (sin markdown):
-{{"type":"bug_fix","description":"mejora sugerida en español","impact":"alto","code_summary":"qué cambiaría","old_code":"código viejo","new_code":"código nuevo","safe_to_auto_apply":true}}"""
+    top_err = _error_log[-1] if _error_log else {"endpoint":"api","error":"mejora general"}
+    prompt = f'''Error: {top_err["endpoint"]}: {top_err["error"][:60]}
+JSON: {{"type":"bug_fix","description":"mejora","impact":"alto","code_summary":"fix","old_code":"x","new_code":"y","safe_to_auto_apply":true}}'''  
 
     try:
         msgs = [{"role":"user","content":prompt}]
