@@ -1982,26 +1982,35 @@ async def send_improvement_email(proposal: dict) -> bool:
     </div>
     """
     
+    print(f"📧 Enviando email a {OWNER_EMAIL}...")
+    print(f"   SendGrid key: {'✅ configurada' if SENDGRID_KEY else '❌ NO configurada'}")
+    
     if SENDGRID_KEY:
         try:
-            async with httpx.AsyncClient(timeout=15) as c:
+            async with httpx.AsyncClient(timeout=20) as c:
                 r = await c.post(
                     "https://api.sendgrid.com/v3/mail/send",
                     headers={"Authorization": f"Bearer {SENDGRID_KEY}", "Content-Type": "application/json"},
                     json={
                         "personalizations": [{"to": [{"email": OWNER_EMAIL}]}],
                         "from": {"email": "ms.horasoft@gmail.com", "name": "Orquesta AI"},
-                        "subject": f"🤖 Orquesta propone mejora: {proposal['type']}",
+                        "subject": f"🤖 Orquesta propone mejora: {proposal.get('type','mejora')}",
                         "content": [{"type": "text/html", "value": html_body}]
                     }
                 )
-                return r.is_success
+                print(f"📧 SendGrid respuesta: {r.status_code} | {r.text[:200]}")
+                if r.is_success:
+                    print(f"✅ Email enviado a {OWNER_EMAIL}")
+                    return True
+                else:
+                    print(f"❌ SendGrid error: {r.status_code} - {r.text[:300]}")
         except Exception as e:
-            print(f"Email error: {e}")
+            print(f"❌ Email exception: {e}")
+    else:
+        print("❌ SENDGRID_API_KEY no configurada en Railway")
     
-    # Fallback: guardar en log para ver en /api/self-improve/pending
-    print(f"MEJORA PENDIENTE: {proposal['id']} - {proposal['description']}")
-    return True
+    print(f"📋 MEJORA PENDIENTE (sin email): {proposal['id']} - {proposal.get('description','')}")
+    return False
 
 async def apply_github_change(filename: str, new_content: str, commit_msg: str) -> bool:
     """Aplica un cambio directamente en GitHub via API."""
