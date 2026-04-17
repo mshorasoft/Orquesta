@@ -492,7 +492,7 @@ TASK_LABELS = {
     "file_gen_xlsx":"orquesta · excel","file_gen_docx":"orquesta · word","file_gen_pdf":"orquesta · pdf",
 }
 TASK_MODELS = {
-    "code":"llama-3.3-70b-versatile","technical":"mixtral-8x7b-32768","analysis":"mixtral-8x7b-32768",
+    "code":"llama-3.3-70b-versatile","technical":"llama-3.1-8b-instant","analysis":"llama-3.1-8b-instant",
     "creative":"llama-3.3-70b-versatile","translate":"llama-3.3-70b-versatile",
     "general":"llama-3.3-70b-versatile","realtime":"llama-3.3-70b-versatile",
     "file_gen_xlsx":"llama-3.3-70b-versatile","file_gen_docx":"llama-3.3-70b-versatile",
@@ -755,7 +755,7 @@ async def groq_with_fallback(messages, model, use_gemini_fallback=True):
         return await call_groq(messages, model), model
     except Exception:
         try:
-            alt = "llama-3.3-70b-versatile" if model != "llama-3.3-70b-versatile" else "mixtral-8x7b-32768"
+            alt = "llama-3.3-70b-versatile" if model != "llama-3.3-70b-versatile" else "llama-3.1-8b-instant"
             return await call_groq(messages, alt), alt
         except Exception:
             if GEMINI_KEY and use_gemini_fallback:
@@ -1366,14 +1366,14 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
                     enriched = (f'"{req.prompt}"\n\nDatos reales de internet:\n{ctx[:3000]}\n\n'
                                 f"Realizá un análisis PROFUNDO Y COMPARATIVO con datos reales.")
                     msgs = build_messages(system, req.history, enriched)
-                    result, _ = await groq_with_fallback(msgs, "mixtral-8x7b-32768")
+                    result, _ = await groq_with_fallback(msgs, "llama-3.1-8b-instant")
                     label = "orquesta · análisis+web"
                 else:
                     msgs = build_messages(system, req.history, req.prompt)
-                    result, _ = await groq_with_fallback(msgs, "mixtral-8x7b-32768")
+                    result, _ = await groq_with_fallback(msgs, "llama-3.1-8b-instant")
             except Exception:
                 msgs = build_messages(system, req.history, req.prompt)
-                result, _ = await groq_with_fallback(msgs, "mixtral-8x7b-32768")
+                result, _ = await groq_with_fallback(msgs, "llama-3.1-8b-instant")
 
         else:
             model = TASK_MODELS.get(task, "llama-3.3-70b-versatile")
