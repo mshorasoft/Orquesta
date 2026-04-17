@@ -18,8 +18,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY) if SUPABASE
 # ── JWT MANUAL PARA KLING ────────────────────────────────────────────────────
 def _make_kling_jwt(access_key: str, secret_key: str) -> str:
     import base64, json, time
-    if not secret_key:
-        raise ValueError("Kling JWT secret_key cannot be empty")
     now = int(time.time())
     header  = base64.urlsafe_b64encode(json.dumps({"alg":"HS256","typ":"JWT"}).encode()).rstrip(b"=").decode()
     payload = base64.urlsafe_b64encode(json.dumps({"iss":access_key,"exp":now+1800,"nbf":now-5}).encode()).rstrip(b"=").decode()
@@ -62,8 +60,44 @@ STRIPE_PRICE_ANNUAL    = os.getenv("STRIPE_PRICE_ANNUAL", "")
 MP_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
 
 # ── LÍMITES ───────────────────────────────────────────────────────────────────
-# FIX 1: límite subido a 20 mensajes para plan Free
 FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "20"))
+
+# ── RATE LIMITING por IP ──────────────────────────────────────────────────────
+from collections import defaultdict
+_ip_requests: dict = defaultdict(list)  # ip -> [timestamps]
+
+def check_rate_limit(ip: str, max_per_minute: int = 20) -> bool:
+    """Retorna True si la IP está dentro del límite, False si excedió."""
+    now = time.time()
+    window = _ip_requests[ip]
+    # Limpiar requests de más de 60 segundos
+    _ip_requests[ip] = [t for t in window if now - t < 60]
+    if len(_ip_requests[ip]) >= max_per_minute:
+        return False
+    _ip_requests[ip].append(now)
+    return True
+
+# ── CACHÉ DE RESPUESTAS ───────────────────────────────────────────────────────
+_response_cache: dict = {}  # hash -> (result, timestamp)
+
+def get_cached_response(prompt: str, mode: str) -> str | None:
+    """Retorna respuesta cacheada si existe y tiene menos de 1 hora."""
+    key = f"{hash(prompt[:100])}_{mode}"
+    if key in _response_cache:
+        result, ts = _response_cache[key]
+        if time.time() - ts < 3600:  # 1 hora
+            return result
+    return None
+
+def cache_response(prompt: str, mode: str, result: str):
+    """Cachea una respuesta general (solo para preguntas genéricas)."""
+    key = f"{hash(prompt[:100])}_{mode}"
+    _response_cache[key] = (result, time.time())
+    # Limpiar caché si tiene más de 500 entradas
+    if len(_response_cache) > 500:
+        oldest = sorted(_response_cache.keys(), key=lambda k: _response_cache[k][1])[:100]
+        for k in oldest:
+            del _response_cache[k]
 
 # ── FUNCIONES QUE REQUIEREN PRO ───────────────────────────────────────────────
 PRO_ONLY_TASKS = {
@@ -1106,8 +1140,12 @@ class OrchestrateResp(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/orchestrate", response_model=OrchestrateResp)
-async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
+async def orchestrate(req: OrchestrateReq, request: Request, authorization: str = Header(None)):
     if not req.prompt.strip(): raise HTTPException(400, "Prompt vacío")
+    # Rate limiting por IP
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_rate_limit(client_ip, max_per_minute=30):
+        raise HTTPException(429, "Demasiadas peticiones. Esperá un momento.")
 
     user = await get_optional_user(authorization)
     print(f"orchestrate: auth_id='{req.auth_id[:8] if req.auth_id else ''}' user_id='{req.user_id[:8] if req.user_id else ''}' user_plan='{req.user_plan}' user={'found' if user else 'None'}")
@@ -1192,6 +1230,8 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
             ftype = task.replace("file_gen_","")
             try:
                 fb, fn, mime = await generate_file_from_prompt(req.prompt, ftype, username)
+                if not fb or len(fb) < 100:
+                    raise Exception("El archivo generado está vacío")
                 token = cache_file(fb, fn, mime)
                 file_url = f"/api/download/{token}"
                 file_type = ftype; file_name = fn
@@ -1199,7 +1239,21 @@ async def orchestrate(req: OrchestrateReq, authorization: str = Header(None)):
                 result = f"✅ Tu archivo **{names.get(ftype,ftype.upper())}** está listo. Hacé clic en el botón para descargarlo."
                 label = f"orquesta · {names.get(ftype,ftype).lower()}"
             except Exception as e:
-                result = f"Error generando el archivo: {str(e)[:200]}. Reformulá tu pedido."
+                err_detail = str(e) if str(e) else type(e).__name__
+                print(f"File gen error ({ftype}): {err_detail}")
+                # Intentar con un prompt más simple como fallback
+                try:
+                    simple_prompt = f"Creá un {ftype} básico sobre: {req.prompt[:100]}"
+                    fb2, fn2, mime2 = await generate_file_from_prompt(simple_prompt, ftype, username)
+                    token2 = cache_file(fb2, fn2, mime2)
+                    file_url = f"/api/download/{token2}"
+                    file_type = ftype; file_name = fn2
+                    names = {"xlsx":"Excel","docx":"Word","pdf":"PDF"}
+                    result = f"✅ Tu archivo **{names.get(ftype,ftype.upper())}** está listo."
+                    label = f"orquesta · {names.get(ftype,ftype).lower()}"
+                except Exception as e2:
+                    err2 = str(e2) if str(e2) else type(e2).__name__
+                    result = f"❌ No pude generar el archivo {ftype.upper()}. Error: {err2}. Por favor reformulá tu pedido con más detalle."
 
         elif task == "video_gen":
             video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, username)
@@ -2101,6 +2155,65 @@ async def trigger_analysis_get():
     <br><a href="/api/self-improve/pending" style="color:#1D9E75;">Ver JSON completo →</a>
     </body></html>
     """)
+
+@router.post("/orchestrate/stream")
+async def orchestrate_stream(req: OrchestrateReq, request: Request, authorization: str = Header(None)):
+    """Versión streaming del orchestrate — devuelve tokens en tiempo real."""
+    from fastapi.responses import StreamingResponse as SR
+    
+    if not req.prompt.strip():
+        raise HTTPException(400, "Prompt vacío")
+
+    # Rate limiting
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_rate_limit(client_ip, max_per_minute=30):
+        raise HTTPException(429, "Demasiadas peticiones. Esperá un momento.")
+
+    user = await get_optional_user(authorization)
+    if not user and supabase:
+        for field, value in [("auth_id", req.auth_id), ("auth_id", req.user_id), ("id", req.user_id)]:
+            if not value: continue
+            try:
+                result = supabase.table("users").select("*").eq(field, value).single().execute()
+                if result.data: user = result.data; break
+            except: continue
+
+    task = classify(req.prompt, req.mode, req.history)
+    block = check_pro_access(user, task)
+    if block and block.get("blocked"):
+        async def blocked_gen():
+            yield f"data: {json.dumps({'text': block['message'], 'done': True})}\n\n"
+        return SR(blocked_gen(), media_type="text/event-stream")
+
+    system = get_system(req.mode, user["name"] if user else req.username)
+    model = TASK_MODELS.get(task, "llama-3.3-70b-versatile")
+    msgs = build_messages(system, req.history, req.prompt)
+
+    async def stream_gen():
+        try:
+            async with httpx.AsyncClient(timeout=60) as c:
+                async with c.stream("POST", "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                    json={"model": model, "messages": msgs, "max_tokens": 4096,
+                          "temperature": 0.7, "stream": True}) as resp:
+                    async for line in resp.aiter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                yield f"data: {json.dumps({'text': '', 'done': True})}\n\n"
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                token = chunk["choices"][0]["delta"].get("content", "")
+                                if token:
+                                    yield f"data: {json.dumps({'text': token, 'done': False})}\n\n"
+                            except: pass
+        except Exception as e:
+            yield f"data: {json.dumps({'text': f'Error: {str(e)}', 'done': True})}\n\n"
+
+    return SR(stream_gen(), media_type="text/event-stream",
+              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
 
 @router.get("/status")
 async def status():
