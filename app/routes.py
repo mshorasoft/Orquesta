@@ -2036,10 +2036,12 @@ Respondé SOLO con JSON válido (sin markdown, sin texto extra):
 {{"type":"bug_fix","description":"descripción corta en español","impact":"alto","code_summary":"qué cambiaría en el código","old_code":"fragmento a reemplazar","new_code":"código nuevo","safe_to_auto_apply":true}}"""
 
     try:
-        # Timeout explícito para no colgarse
-        async with asyncio.timeout(20):
-            msgs = [{"role": "user", "content": analysis_prompt}]
-            result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+        # Timeout explícito para no colgarse (compatible Python 3.8+)
+        msgs = [{"role": "user", "content": analysis_prompt}]
+        result, _ = await asyncio.wait_for(
+            groq_with_fallback(msgs, "llama-3.3-70b-versatile"),
+            timeout=15.0
+        )
 
         # Parsear JSON de forma robusta
         clean = result.strip()
@@ -2172,12 +2174,36 @@ async def trigger_analysis_get():
 
     # Agregar errores de ejemplo si no hay ninguno
     if not _error_log:
-        log_error("/api/upload", "Gemini 429 quota exceeded — free tier limit reached", "vision")
-        log_error("/api/stt", "OpenAI quota exceeded — billing required", "stt")
-        log_error("/api/orchestrate", "video_gen fallback — no API credits available", "video")
+        log_error("/api/upload", "Gemini 429 quota exceeded", "vision")
+        log_error("/api/stt", "OpenAI quota exceeded", "stt")
+        log_error("/api/orchestrate", "video_gen no credits", "video")
 
-    # Lanzar análisis en background — no esperar resultado
-    asyncio.create_task(analyze_and_propose_improvements())
+    # Hacer el análisis directamente con timeout corto
+    error_summary = "\n".join([f"- {e['endpoint']}: {e['error'][:80]}" for e in _error_log[-5:]])
+    prompt = f"""Errores en Orquesta AI:
+{error_summary}
+
+Respondé SOLO con este JSON (sin markdown):
+{{"type":"bug_fix","description":"mejora sugerida en español","impact":"alto","code_summary":"qué cambiaría","old_code":"código viejo","new_code":"código nuevo","safe_to_auto_apply":true}}"""
+
+    try:
+        msgs = [{"role":"user","content":prompt}]
+        result, _ = await asyncio.wait_for(
+            groq_with_fallback(msgs, "llama-3.3-70b-versatile"),
+            timeout=12.0
+        )
+        clean = result.strip()
+        s, e2 = clean.find("{"), clean.rfind("}") + 1
+        if s >= 0 and e2 > s:
+            pdata = json.loads(clean[s:e2])
+            pid = str(uuid.uuid4())[:8]
+            _pending_improvements[pid] = {"id":pid,"ts":datetime.now(timezone.utc).isoformat(),"status":"pending",**pdata}
+            asyncio.create_task(send_improvement_email(_pending_improvements[pid]))
+            print(f"✅ Mejora: {pid} - {pdata.get('description','')}")
+    except asyncio.TimeoutError:
+        print("⏱ Trigger timeout")
+    except Exception as ex:
+        print(f"Trigger error: {ex}")
 
     pending = list(_pending_improvements.values())
     items = "".join([
