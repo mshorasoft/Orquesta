@@ -344,13 +344,20 @@ def get_system(mode, username="", history=None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 VIDEO_GEN_KW = [
+    # Frases directas
     "genera un video","generá un video","crea un video","creá un video",
-    "hace un video","hacé un video","video de","video con","animación de",
-    "animación con","animate","generate video","create video","make a video",
-    "video corto","clip de","short video","film","película corta",
-    "video animado","animá","animar","renderizá un video","render video",
-    "quiero un video","necesito un video","haceme un video","generame un video",
-    "dame el video","el video de","video publicitario","video promocional",
+    "hace un video","hacé un video","haceme un video","generame un video",
+    "quiero un video","necesito un video","dame un video",
+    "generate video","create video","make a video","make me a video",
+    # Con palabras intermedias
+    "me generes un video","me hagas un video","me crees un video",
+    "me generés un video","generar un video","crear un video",
+    "video animado","video corto","video publicitario","video promocional",
+    "video en 4k","video 4k","video hd","video uhd","video de",
+    # Otros formatos
+    "animación de","animación con","animate","clip de","short video",
+    "film","película corta","animá","animar","renderizá un video","render video",
+    "dame el video","el video de","video con",
 ]
 IMAGE_GEN_KW = [
     "genera una imagen","generá una imagen","crea una imagen","creá una imagen",
@@ -474,7 +481,14 @@ def classify(prompt, mode, history=None):
 
     ftype = detect_file_type(p)
     if ftype: return f"file_gen_{ftype}"
-    if any(k in p for k in VIDEO_GEN_KW): return "video_gen"
+
+    has_video_intent = any(k in p for k in VIDEO_GEN_KW)
+    # "video" solo + verbo de generación explícito también cuenta
+    gen_verbs = ["genera","generá","crea","creá","hacé","hace","quiero","necesito","dame","haceme","generame","fagas","hagas","generes"]
+    if not has_video_intent and "video" in p and any(v in p for v in gen_verbs):
+        has_video_intent = True
+
+    if has_video_intent: return "video_gen"
     if any(k in p for k in IMAGE_GEN_KW): return "image_gen"
     if any(k in p for k in SOUND_KW): return "sound_gen"
     if any(k in p for k in TRANSLATE_KW): return "translate"
@@ -817,7 +831,7 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
     return url, "🎨 Imagen generada.", "pollinations · imagen"
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  VIDEO GENERATION
+#  VIDEO GENERATION  — cascada: Motor propio → Replicate → FAL.ai → ModelsLab → descripción
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def generate_video_smart(prompt: str, history=None, mode="general", username="") -> tuple[str, str, str]:
@@ -827,6 +841,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
     VIDEOGEN_KEY  = os.getenv("VIDEOGEN_API_KEY", "")
     MODELSLAB_KEY = os.getenv("MODELSLAB_API_KEY", "")
     REPLICATE_KEY = os.getenv("REPLICATE_API_KEY", "")
+    FAL_KEY       = os.getenv("FAL_API_KEY", "")
 
     async def enhance(p):
         try:
@@ -839,8 +854,29 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except:
             return p
 
+    async def replicate_poll(pred_id: str, model_name: str) -> str | None:
+        """Polling genérico para predictions de Replicate. Retorna video_url o None."""
+        async with httpx.AsyncClient(timeout=200) as c:
+            for attempt in range(24):  # hasta 4 minutos (24 x 10s)
+                await asyncio.sleep(10)
+                r = await c.get(
+                    f"https://api.replicate.com/v1/predictions/{pred_id}",
+                    headers={"Authorization": f"Token {REPLICATE_KEY}"}
+                )
+                d = r.json()
+                status = d.get("status")
+                print(f"🎬 Replicate {model_name} polling {attempt+1}/24: {status}")
+                if status == "succeeded":
+                    output = d.get("output")
+                    return output[0] if isinstance(output, list) else output
+                elif status in ("failed", "canceled"):
+                    print(f"🎬 Replicate {model_name} failed: {d.get('error','')}")
+                    return None
+        return None  # timeout
+
     enhanced = await enhance(prompt)
     errors = {}
+    print(f"🎬 Video request — prompt mejorado: {enhanced[:80]}")
 
     # ── 1. Motor propio (si está configurado) ──────────────────────────────────
     if VIDEOGEN_URL and VIDEOGEN_KEY:
@@ -855,47 +891,55 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                     rd = r.json()
                     if rd.get("success"):
                         return f"{VIDEOGEN_URL}{rd.get('download_url','')}", f"🎬 Video generado ({rd.get('duration_s','?')}s).", "orquesta · videogen"
-                    errors["videogen"] = rd.get("error","Error")[:80]
+                    errors["videogen"] = rd.get("error", "Error")[:80]
                 else:
                     errors["videogen"] = f"HTTP {r.status_code}"
         except Exception as e:
             errors["videogen"] = str(e)[:80]
 
-    # ── 2. Replicate — múltiples modelos de video ──────────────────────────────
+    # ── 2. Replicate — cascada: Wan 2.1 → Minimax → LTX Video ─────────────────
     if REPLICATE_KEY:
-        print(f"🎬 Replicate: intentando generar video con prompt: {enhanced[:80]}")
-        # Usar la API v1/predictions con versiones específicas — más confiable
         replicate_models = [
-            # Wan 2.1 480p — via modelo directo
             {
+                "name": "wan-2.1-480p",
                 "url": "https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-480p/predictions",
-                "version": None,
-                "input": {"prompt": enhanced, "num_frames": 81, "sample_steps": 20, "sample_guide_scale": 5},
-                "name": "wan-2.1-480p"
+                "input": {
+                    "prompt": enhanced,
+                    "num_frames": 81,
+                    "sample_steps": 20,
+                    "sample_guide_scale": 5,
+                    "fast_mode": "Balanced",
+                },
             },
-            # Minimax Video-01 — buena calidad
             {
+                "name": "minimax-video-01",
                 "url": "https://api.replicate.com/v1/models/minimax/video-01/predictions",
-                "version": None,
-                "input": {"prompt": enhanced, "prompt_optimizer": True},
-                "name": "minimax-video-01"
+                "input": {
+                    "prompt": enhanced,
+                    "prompt_optimizer": True,
+                },
             },
-            # LTX Video — rápido
             {
-                "url": "https://api.replicate.com/v1/models/lightricks/ltx-video/predictions",
-                "version": None,
-                "input": {"prompt": enhanced, "negative_prompt": "low quality, blurry, distorted"},
-                "name": "ltx-video"
+                "name": "ltx-video",
+                "url": "https://api.replicate.com/v1/predictions",
+                "version": "8c15b830f14b8e4aea31c3e3ac5a03ea13ae3aaf446a1f1f0b9e07ba21baa9b2",
+                "input": {
+                    "prompt": enhanced,
+                    "negative_prompt": "low quality, blurry, distorted, watermark",
+                    "num_frames": 121,
+                    "frame_rate": 25,
+                },
             },
         ]
+
         for model in replicate_models:
             try:
+                print(f"🎬 Replicate: probando {model['name']}...")
                 payload = {"input": model["input"]}
                 if model.get("version"):
                     payload["version"] = model["version"]
-                
-                print(f"🎬 Replicate: probando {model['name']}...")
-                async with httpx.AsyncClient(timeout=30) as c:
+
+                async with httpx.AsyncClient(timeout=40) as c:
                     r = await c.post(
                         model["url"],
                         headers={"Authorization": f"Token {REPLICATE_KEY}", "Content-Type": "application/json"},
@@ -903,81 +947,115 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                     )
                     d = r.json()
                     print(f"🎬 Replicate {model['name']}: status={r.status_code} response={str(d)[:150]}")
+
+                    if r.status_code in (402, 403):
+                        errors[model["name"]] = d.get("detail", "Sin créditos")[:80]
+                        continue
+
                     pred_id = d.get("id")
                     if not pred_id:
                         errors[model["name"]] = d.get("detail", str(d))[:80]
                         continue
-                    
-                    # Polling hasta 3 minutos
-                    video_url = None
-                    async with httpx.AsyncClient(timeout=200) as c2:
-                        for attempt in range(18):
-                            await asyncio.sleep(10)
-                            r2 = await c2.get(
-                                f"https://api.replicate.com/v1/predictions/{pred_id}",
-                                headers={"Authorization": f"Token {REPLICATE_KEY}"}
-                            )
-                            d2 = r2.json()
-                            status = d2.get("status")
-                            print(f"🎬 Replicate {model['name']} polling {attempt+1}/18: {status}")
-                            if status == "succeeded":
-                                output = d2.get("output")
-                                video_url = output[0] if isinstance(output, list) else output
-                                break
-                            elif status == "failed":
-                                err = d2.get("error", "Failed")
-                                errors[model["name"]] = err[:80]
-                                print(f"🎬 Replicate {model['name']} failed: {err}")
-                                break
-                    
-                    if video_url:
-                        print(f"✅ Video generado con {model['name']}: {video_url}")
-                        return video_url, f"🎬 Video generado con **Replicate** ({model['name']}).", f"replicate · {model['name']}"
+
+                video_url = await replicate_poll(pred_id, model["name"])
+                if video_url:
+                    print(f"✅ Video OK con {model['name']}: {video_url}")
+                    return video_url, f"🎬 Video generado con **Replicate** ({model['name']}).", f"replicate · {model['name']}"
+                else:
+                    errors[model["name"]] = "failed o timeout en polling"
+
             except Exception as e:
                 errors[model["name"]] = str(e)[:60]
                 print(f"🎬 Replicate {model['name']} exception: {e}")
                 continue
 
-    # ── 3. FAL.ai — tier gratuito disponible en fal.ai ─────────────────────────
-    FAL_KEY = os.getenv("FAL_API_KEY", "")
+    # ── 3. FAL.ai — cascada: Wan T2V → LTX Video → Fast-SVD ──────────────────
     if FAL_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=180) as c:
-                # Enviar request a fal.ai
-                r = await c.post(
-                    "https://queue.fal.run/fal-ai/fast-animatediff/turbo",
-                    headers={"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"},
-                    json={"prompt": enhanced, "num_frames": 16, "fps": 8, "num_inference_steps": 10}
-                )
-                if r.is_success:
-                    d = r.json()
-                    request_id = d.get("request_id")
-                    if request_id:
-                        for _ in range(18):
-                            await asyncio.sleep(10)
-                            r2 = await c.get(
-                                f"https://queue.fal.run/fal-ai/fast-animatediff/turbo/requests/{request_id}",
-                                headers={"Authorization": f"Key {FAL_KEY}"}
-                            )
-                            d2 = r2.json()
-                            if d2.get("status") == "COMPLETED":
-                                video_url = d2.get("response_url") or (d2.get("video", {}) or {}).get("url")
-                                if video_url:
-                                    return video_url, "🎬 Video generado con **FAL.ai**.", "fal · animatediff"
-                                break
-        except Exception as e:
-            errors["fal"] = str(e)[:80]
+        fal_models = [
+            {
+                "name": "fal · wan-t2v",
+                "url": "https://queue.fal.run/fal-ai/wan-t2v",
+                "body": {"prompt": enhanced, "num_frames": 81, "frames_per_second": 16},
+                "result_key": "video.url",
+            },
+            {
+                "name": "fal · ltx-video",
+                "url": "https://queue.fal.run/fal-ai/ltx-video",
+                "body": {"prompt": enhanced, "negative_prompt": "low quality, blurry", "num_frames": 121},
+                "result_key": "video.url",
+            },
+            {
+                "name": "fal · fast-svd",
+                "url": "https://queue.fal.run/fal-ai/fast-svd-lcm",
+                "body": {"prompt": enhanced, "num_frames": 14, "fps": 7},
+                "result_key": "video.url",
+            },
+        ]
 
-    # ── 4. ModelsLab (registrarse gratis en modelslab.com) ─────────────────────
+        def _extract(d: dict, key_path: str):
+            for k in key_path.split("."):
+                if not isinstance(d, dict): return None
+                d = d.get(k)
+            return d
+
+        for fal_model in fal_models:
+            try:
+                print(f"🎬 FAL.ai: probando {fal_model['name']}...")
+                async with httpx.AsyncClient(timeout=40) as c:
+                    r = await c.post(
+                        fal_model["url"],
+                        headers={"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"},
+                        json=fal_model["body"]
+                    )
+                    d = r.json()
+                    print(f"🎬 FAL {fal_model['name']}: status={r.status_code} response={str(d)[:120]}")
+                    if not r.is_success:
+                        errors[fal_model["name"]] = d.get("detail", f"HTTP {r.status_code}")[:80]
+                        continue
+
+                    request_id = d.get("request_id")
+                    if not request_id:
+                        errors[fal_model["name"]] = "sin request_id"
+                        continue
+
+                    status_url = fal_model["url"].rstrip("/") + f"/requests/{request_id}"
+                    video_url = None
+                    async with httpx.AsyncClient(timeout=250) as c2:
+                        for attempt in range(24):
+                            await asyncio.sleep(10)
+                            r2 = await c2.get(status_url, headers={"Authorization": f"Key {FAL_KEY}"})
+                            d2 = r2.json()
+                            fal_status = d2.get("status")
+                            print(f"🎬 FAL {fal_model['name']} polling {attempt+1}/24: {fal_status}")
+                            if fal_status == "COMPLETED":
+                                video_url = _extract(d2, fal_model["result_key"])
+                                break
+                            elif fal_status in ("FAILED", "ERROR"):
+                                errors[fal_model["name"]] = d2.get("error", "failed")[:80]
+                                break
+
+                    if video_url:
+                        print(f"✅ Video OK con {fal_model['name']}: {video_url}")
+                        return video_url, f"🎬 Video generado con **FAL.ai** ({fal_model['name'].split('·')[1].strip()}).", fal_model["name"]
+                    else:
+                        errors.setdefault(fal_model["name"], "timeout o sin URL en output")
+
+            except Exception as e:
+                errors[fal_model["name"]] = str(e)[:60]
+                print(f"🎬 FAL {fal_model['name']} exception: {e}")
+                continue
+
+    # ── 4. ModelsLab ───────────────────────────────────────────────────────────
     if MODELSLAB_KEY:
         try:
-            async with httpx.AsyncClient(timeout=30) as c:
+            print("🎬 ModelsLab: intentando...")
+            async with httpx.AsyncClient(timeout=150) as c:
                 r = await c.post(
                     "https://modelslab.com/api/v6/video/text2video",
                     json={
                         "key": MODELSLAB_KEY,
                         "prompt": enhanced,
-                        "negative_prompt": "low quality, blurry",
+                        "negative_prompt": "low quality, blurry, distorted",
                         "height": 512, "width": 912,
                         "num_frames": 16,
                         "num_inference_steps": 20,
@@ -985,11 +1063,12 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                     }
                 )
                 d = r.json()
+                print(f"🎬 ModelsLab: status={r.status_code} response={str(d)[:120]}")
                 if d.get("status") == "success" and d.get("output"):
                     return d["output"][0], "🎬 Video generado con **ModelsLab**.", "modelslab · video"
                 elif d.get("status") == "processing" and d.get("fetch_result"):
                     fetch_url = d["fetch_result"]
-                    for _ in range(12):
+                    for _ in range(18):
                         await asyncio.sleep(10)
                         r2 = await c.post(fetch_url, json={"key": MODELSLAB_KEY})
                         d2 = r2.json()
@@ -999,70 +1078,7 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
         except Exception as e:
             errors["modelslab"] = str(e)[:80]
 
-    # ── 3. ModelsLab (tiene tier gratuito) ─────────────────────────────────────
-    if MODELSLAB_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=120) as c:
-                r = await c.post(
-                    "https://modelslab.com/api/v6/video/text2video",
-                    json={
-                        "key": MODELSLAB_KEY,
-                        "prompt": enhanced,
-                        "negative_prompt": "low quality, blurry, distorted",
-                        "height": 512,
-                        "width": 912,
-                        "num_frames": 16,
-                        "num_inference_steps": 20,
-                        "guidance_scale": 7.5,
-                    }
-                )
-                d = r.json()
-                if d.get("status") == "success" and d.get("output"):
-                    video_url = d["output"][0]
-                    return video_url, "🎬 Video generado con **ModelsLab**.", "modelslab · video"
-                elif d.get("status") == "processing" and d.get("fetch_result"):
-                    # Polling para esperar resultado
-                    fetch_url = d["fetch_result"]
-                    for _ in range(12):  # Esperar hasta 2 minutos
-                        await asyncio.sleep(10)
-                        r2 = await c.post(fetch_url, json={"key": MODELSLAB_KEY})
-                        d2 = r2.json()
-                        if d2.get("status") == "success" and d2.get("output"):
-                            return d2["output"][0], "🎬 Video generado con **ModelsLab**.", "modelslab · video"
-                errors["modelslab"] = d.get("message","Error")[:80]
-        except Exception as e:
-            errors["modelslab"] = str(e)[:80]
-
-    # ── 4. Replicate (pago, pero muy barato ~$0.02) ────────────────────────────
-    if REPLICATE_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=180) as c:
-                # Usar Stable Video Diffusion o similar
-                r = await c.post(
-                    "https://api.replicate.com/v1/models/anotherjesse/zeroscope-v2-xl/predictions",
-                    headers={"Authorization": f"Token {REPLICATE_KEY}", "Content-Type": "application/json"},
-                    json={"input": {"prompt": enhanced, "num_frames": 24, "num_inference_steps": 20, "width": 1024, "height": 576}}
-                )
-                d = r.json()
-                pred_id = d.get("id")
-                if pred_id:
-                    # Polling
-                    for _ in range(18):
-                        await asyncio.sleep(10)
-                        r2 = await c.get(
-                            f"https://api.replicate.com/v1/predictions/{pred_id}",
-                            headers={"Authorization": f"Token {REPLICATE_KEY}"}
-                        )
-                        d2 = r2.json()
-                        if d2.get("status") == "succeeded" and d2.get("output"):
-                            return d2["output"][0], "🎬 Video generado con **Replicate** (ZeroScope XL).", "replicate · video"
-                        elif d2.get("status") == "failed":
-                            errors["replicate"] = d2.get("error","Failed")[:80]
-                            break
-        except Exception as e:
-            errors["replicate"] = str(e)[:80]
-
-    # ── Fallback: descripción cinematográfica ──────────────────────────────────
+    # ── 5. Fallback: descripción cinematográfica ───────────────────────────────
     video_system = (
         get_system(mode, username) +
         "\n\nEl usuario pidió un video con IA. Describí el video de forma muy cinematográfica y detallada — "
@@ -1073,20 +1089,23 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
     desc_msgs = build_messages(video_system, hist, f"Video: {prompt}\nPrompt mejorado: {enhanced}")
     description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
 
-    # Mensaje honesto sobre el estado real de los videos
     if errors:
-        errs_str = " | ".join([f"{k}: {v[:60]}" for k,v in errors.items()])
-        no_credits = any("credit" in v.lower() or "quota" in v.lower() or "billing" in v.lower() 
-                        for v in errors.values())
+        errs_str = " | ".join([f"{k}: {v[:60]}" for k, v in errors.items()])
+        no_credits = any(
+            kw in v.lower() for v in errors.values()
+            for kw in ("credit", "quota", "billing", "insufficient", "free time")
+        )
         if no_credits:
-            honest_msg = (f"Intenté generar el video pero las APIs de video no tienen créditos disponibles "
-                         f"en este momento.\n\nTe doy la descripción cinematográfica del video que hubiera generado:\n\n"
-                         f"{description}\n\n"
-                         f"*Para activar la generación real de videos, recargá créditos en Replicate o ModelsLab.*")
+            honest_msg = (
+                f"Intenté generar el video pero las APIs no tienen créditos disponibles ahora mismo.\n\n"
+                f"Te doy la descripción cinematográfica:\n\n{description}\n\n"
+                f"*Para activar la generación real cargá crédito en Replicate (replicate.com/account/billing).*"
+            )
         else:
-            honest_msg = f"{description}\n\n> ⚠️ APIs probadas: {errs_str}"
+            honest_msg = f"{description}\n\n> ⚠️ APIs probadas sin éxito: {errs_str}"
     else:
         honest_msg = description
+
     return "", honest_msg, "orquesta · video-descripcion"
 
 
@@ -2352,9 +2371,53 @@ async def orchestrate_stream(req: OrchestrateReq, request: Request, authorizatio
             yield f"data: {json.dumps({'text': block['message'], 'done': True})}\n\n"
         return SR(blocked_gen(), media_type="text/event-stream")
 
-    system = get_system(req.mode, user["name"] if user else req.username)
+    username = user["name"] if user else req.username
+    system = get_system(req.mode, username)
+
+    # ── Tareas especiales: video, imagen, archivos — no son streaming de texto ──
+    if task == "video_gen":
+        async def video_stream_gen():
+            yield f"data: {json.dumps({'text': '⏳ Generando tu video con IA...', 'done': False})}\n\n"
+            try:
+                video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, username)
+                payload = {"text": result, "done": True, "label": label}
+                if video_url:
+                    payload["video_url"] = video_url
+                yield f"data: {json.dumps(payload)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'text': f'Error generando video: {str(e)}', 'done': True})}\n\n"
+        return SR(video_stream_gen(), media_type="text/event-stream",
+                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    if task == "image_gen":
+        async def image_stream_gen():
+            yield f"data: {json.dumps({'text': '🎨 Generando imagen...', 'done': False})}\n\n"
+            try:
+                img_url, result, label = await generate_image_smart(req.prompt)
+                payload = {"text": result, "done": True, "label": label}
+                if img_url:
+                    payload["image_url"] = img_url
+                yield f"data: {json.dumps(payload)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'text': f'Error generando imagen: {str(e)}', 'done': True})}\n\n"
+        return SR(image_stream_gen(), media_type="text/event-stream",
+                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # ── Streaming de texto normal (general, code, realtime, etc.) ─────────────
     model = TASK_MODELS.get(task, "llama-3.3-70b-versatile")
     msgs = build_messages(system, req.history, req.prompt)
+
+    # Si es realtime, enriquecer con búsqueda web antes de streamear
+    if task == "realtime" and TAVILY_KEY:
+        try:
+            ctx = await deep_search(req.prompt)
+            if ctx:
+                enriched = (f'El usuario pregunta: "{req.prompt}"\n\n'
+                            f"=== INFORMACIÓN DE MÚLTIPLES FUENTES ===\n{ctx}\n\n"
+                            f"Respondé de forma COMPLETA Y DETALLADA integrando todos los datos.")
+                msgs = build_messages(system, req.history[:-1] if req.history else [], enriched)
+        except Exception:
+            pass
 
     async def stream_gen():
         try:
