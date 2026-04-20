@@ -63,8 +63,6 @@ MP_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
 FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "20"))
 
 # ── CRÉDITOS DE VIDEO ─────────────────────────────────────────────────────────
-VIDEO_CREDITS_FREE = 0  # Plan free: sin videos
-
 # ── PRECIOS DE VIDEO (FAL.ai → precio a usuario) ─────────────────────────────
 # Costo real FAL.ai x 2 = precio al usuario (100% de margen)
 VIDEO_PRICES = {
@@ -852,12 +850,11 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
 
 async def get_video_credits(user: dict) -> dict:
     """
-    Retorna los créditos de video del usuario.
-    Estructura: {"available": int, "used_this_month": int, "monthly_allowance": int}
-    Primero busca en Supabase tabla video_credits, si no existe usa defaults.
+    Retorna el saldo de video del usuario en USD desde tabla video_balance.
+    Estructura: {"balance_usd": float, "is_pro": bool}
     """
     if not user or not supabase:
-        return {"available": 0, "used_this_month": 0, "monthly_allowance": 0}
+        return {"balance_usd": 0.0, "is_pro": False}
 
     is_pro = (
         user.get("plan") == "pro" and (
@@ -866,40 +863,14 @@ async def get_video_credits(user: dict) -> dict:
         )
     )
 
-    if not is_pro:
-        return {"available": VIDEO_CREDITS_FREE, "used_this_month": 0, "monthly_allowance": VIDEO_CREDITS_FREE}
-
-    monthly_allowance = VIDEO_CREDITS_PRO_ANNUAL if "annual" in (user.get("plan_type") or "") else VIDEO_CREDITS_PRO_MONTHLY
-
-    # Consultar uso del mes actual — si tabla no existe, asumir 0 usados
-    used_this_month = 0
     try:
-        now = datetime.now(timezone.utc)
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
-        result = supabase.table("video_credits")             .select("id")             .eq("user_id", user["id"])             .gte("created_at", month_start)             .execute()
-        used_this_month = len(result.data or [])
-        print(f"✅ video_credits: {used_this_month} usados este mes")
+        result = supabase.table("video_balance")             .select("balance_usd")             .eq("user_id", user["id"])             .single()             .execute()
+        balance = round(float(result.data.get("balance_usd", 0.0)), 4) if result.data else 0.0
+        print(f"✅ video_balance: ${balance:.2f} USD")
+        return {"balance_usd": balance, "is_pro": is_pro}
     except Exception as e:
-        print(f"video_credits table not ready (ok): {e}")
-        used_this_month = 0  # tabla no existe → 0 usados
-
-    # Consultar packs extra — si tabla no existe, asumir 0 extras
-    extra = 0
-    try:
-        extra_result = supabase.table("video_credit_packs")             .select("credits_remaining")             .eq("user_id", user["id"])             .gt("credits_remaining", 0)             .execute()
-        extra = sum(r.get("credits_remaining", 0) for r in (extra_result.data or []))
-    except Exception as e:
-        print(f"video_credit_packs table not ready (ok): {e}")
-        extra = 0
-
-    available = max(0, (monthly_allowance - used_this_month) + extra)
-    print(f"🎬 Video credits: monthly={monthly_allowance} used={used_this_month} extra={extra} available={available}")
-    return {
-        "available": available,
-        "used_this_month": used_this_month,
-        "monthly_allowance": monthly_allowance,
-        "extra_credits": extra,
-    }
+        print(f"video_balance lookup (ok if first use): {e}")
+        return {"balance_usd": 0.0, "is_pro": is_pro}
 
 
 async def consume_video_credit(user: dict, model_key: str, duration_s: int, prompt_preview: str) -> bool:
