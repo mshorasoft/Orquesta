@@ -1144,86 +1144,139 @@ function showVideoConfirmModal(confirmData) {
   return new Promise((resolve) => {
     _videoConfirmResolve = resolve;
     _selectedPack = null;
+
     const balance = confirmData.balance_usd ?? 0;
-    const prices = confirmData.prices ?? [];
     const canGenerate = confirmData.can_generate ?? false;
 
-    // Seleccionar opción default (más barata que puede pagar)
+    // Siempre mostrar todos los precios (hardcoded como fallback si el backend no los manda)
+    const prices = (confirmData.prices && confirmData.prices.length > 0)
+      ? confirmData.prices
+      : [
+          { model_key:'kling25pro', duration_s:5,  user_price_usd:0.70, label:'Kling 2.5 Pro · 5s · 1080p',  can_afford: balance>=0.70 },
+          { model_key:'kling25pro', duration_s:10, user_price_usd:1.40, label:'Kling 2.5 Pro · 10s · 1080p', can_afford: balance>=1.40 },
+          { model_key:'kling26pro', duration_s:5,  user_price_usd:1.40, label:'Kling 2.6 Pro · 5s · Audio',  can_afford: balance>=1.40 },
+          { model_key:'kling26pro', duration_s:10, user_price_usd:2.80, label:'Kling 2.6 Pro · 10s · Audio', can_afford: balance>=2.80 },
+        ];
+
+    // Seleccionar default: la más barata que puede pagar, o la primera
     const affordable = prices.filter(p => p.can_afford);
     _selectedVideoOption = affordable[0] || prices[0] || null;
 
+    // Construir el overlay fuera del innerHTML para poder agregar eventos reales
     const overlay = document.createElement('div');
     overlay.className = 'video-confirm-overlay';
     overlay.id = 'video-confirm-overlay';
 
-    const pricesHTML = prices.map(p => `
-      <div class="video-option ${p === _selectedVideoOption ? 'selected' : ''} ${!p.can_afford ? 'disabled-opt' : ''}"
-           onclick="selectVideoOption(this, '${p.model_key}', ${p.duration_s}, ${p.user_price_usd})"
-           data-model="${p.model_key}" data-dur="${p.duration_s}" data-price="${p.user_price_usd}">
-        ${p.model_key === 'kling26pro' ? '<span class="video-option-badge">AUDIO</span>' : ''}
-        <div class="video-option-name">${p.duration_s}s · ${p.model_key === 'kling25pro' ? 'Kling 2.5 Pro' : 'Kling 2.6 Pro'}</div>
-        <div class="video-option-detail">${p.model_key === 'kling25pro' ? '1080p · Sin audio' : '1080p · Audio nativo'}</div>
-        <div class="video-option-price">$${p.user_price_usd.toFixed(2)} USD</div>
-      </div>`).join('');
-
-    const packsHTML = VIDEO_PACKS.map(pk => `
-      <div class="video-pack" onclick="selectVideoPack(this, '${pk.id}')" data-pack="${pk.id}">
-        <div class="video-pack-price">$${pk.price}</div>
-        <div class="video-pack-desc">${pk.label}</div>
-      </div>`).join('');
-
-    overlay.innerHTML = `
-      <div class="video-confirm-box">
-        <div class="video-confirm-title">🎬 Generar video con IA</div>
-        <div class="video-confirm-sub">Motor: <strong>FAL.ai · Kling</strong> · Calidad cinematográfica 1080p · 2-5 minutos de procesamiento</div>
-
-        <div class="video-balance-badge">💰 Saldo: $${balance.toFixed(2)} USD</div>
-
-        <div style="font-size:11px;font-weight:600;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px;">Elegí modelo y duración</div>
-        <div class="video-options-grid">${pricesHTML}</div>
-
-        ${!canGenerate ? `<div class="video-insufficient">
-          Saldo insuficiente para generar. Cargá créditos para continuar.
-        </div>` : ''}
-
-        <div class="video-confirm-btns">
-          <button class="video-confirm-cancel" onclick="closeVideoConfirm(null)">Cancelar</button>
-          <button class="video-confirm-ok" id="video-gen-btn" ${!canGenerate || !_selectedVideoOption ? 'disabled' : ''}
-                  onclick="closeVideoConfirm('generate')">
-            🎬 Generar
-          </button>
-        </div>
-
-        <div class="video-topup-section">
-          <div class="video-topup-title">💳 Cargar créditos de video</div>
-          <div class="video-packs-grid">${packsHTML}</div>
-          <div class="video-confirm-btns">
-            <button class="video-topup-btn" id="video-topup-btn" disabled
-                    onclick="closeVideoConfirm('topup')">
-              Cargar créditos con MercadoPago
-            </button>
-          </div>
-        </div>
+    const box = document.createElement('div');
+    box.className = 'video-confirm-box';
+    box.innerHTML = `
+      <div class="video-confirm-title">🎬 Generar video con IA</div>
+      <div class="video-confirm-sub">Motor: <strong>FAL.ai · Kling</strong> · Calidad cinematográfica 1080p · 2-5 min</div>
+      <div class="video-balance-badge" id="vbal-badge">💰 Saldo: $${balance.toFixed(2)} USD</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px;">Elegí modelo y duración</div>
+      <div class="video-options-grid" id="vopts-grid"></div>
+      <div id="vinsuf-msg" style="display:${canGenerate?'none':'block'}" class="video-insufficient">
+        Saldo insuficiente. Cargá créditos abajo para generar.
+      </div>
+      <div class="video-confirm-btns">
+        <button class="video-confirm-cancel" id="vbtn-cancel">Cancelar</button>
+        <button class="video-confirm-ok" id="vbtn-gen" ${(!canGenerate||!_selectedVideoOption)?'disabled':''}>🎬 Generar</button>
+      </div>
+      <div class="video-topup-section">
+        <div class="video-topup-title">💳 Cargar créditos de video</div>
+        <div class="video-packs-grid" id="vpacks-grid"></div>
+        <button class="video-topup-btn" id="vbtn-topup" disabled>Cargar créditos con MercadoPago</button>
       </div>`;
+
+    overlay.appendChild(box);
     document.body.appendChild(overlay);
+
+    // Renderizar opciones de modelo/duración
+    const optsGrid = document.getElementById('vopts-grid');
+    prices.forEach((p, i) => {
+      const opt = document.createElement('div');
+      opt.className = 'video-option' + (i === 0 ? ' selected' : '') + (!p.can_afford ? ' disabled-opt' : '');
+      opt.style.opacity = p.can_afford ? '1' : '0.5';
+      opt.innerHTML = `
+        ${p.model_key==='kling26pro'?'<span class="video-option-badge">AUDIO</span>':''}
+        <div class="video-option-name">${p.duration_s}s · ${p.model_key==='kling25pro'?'Kling 2.5 Pro':'Kling 2.6 Pro'}</div>
+        <div class="video-option-detail">${p.model_key==='kling25pro'?'1080p · Sin audio':'1080p · Audio nativo'}</div>
+        <div class="video-option-price">$${p.user_price_usd.toFixed(2)} USD</div>`;
+      opt.addEventListener('click', () => {
+        document.querySelectorAll('.video-option').forEach(e => e.classList.remove('selected'));
+        opt.classList.add('selected');
+        _selectedVideoOption = { model_key: p.model_key, duration_s: p.duration_s, user_price_usd: p.user_price_usd };
+        const genBtn = document.getElementById('vbtn-gen');
+        if (genBtn) genBtn.disabled = !p.can_afford;
+      });
+      optsGrid.appendChild(opt);
+    });
+
+    // Renderizar packs de recarga
+    const packsGrid = document.getElementById('vpacks-grid');
+    VIDEO_PACKS.forEach(pk => {
+      const pkEl = document.createElement('div');
+      pkEl.className = 'video-pack';
+      pkEl.innerHTML = `<div class="video-pack-price">$${pk.price}</div><div class="video-pack-desc">${pk.label}</div>`;
+      pkEl.addEventListener('click', () => {
+        document.querySelectorAll('.video-pack').forEach(e => e.classList.remove('selected-pack'));
+        pkEl.classList.add('selected-pack');
+        _selectedPack = pk.id;
+        const tb = document.getElementById('vbtn-topup');
+        if (tb) { tb.disabled = false; tb.textContent = `Cargar $${pk.price} USD con MercadoPago`; }
+      });
+      packsGrid.appendChild(pkEl);
+    });
+
+    // Botones con addEventListener real (no onclick en innerHTML)
+    document.getElementById('vbtn-cancel').addEventListener('click', () => closeVideoConfirm(null));
+    document.getElementById('vbtn-gen').addEventListener('click', () => {
+      if (_selectedVideoOption) closeVideoConfirm('generate');
+    });
+    document.getElementById('vbtn-topup').addEventListener('click', async () => {
+      if (!_selectedPack) return;
+      const tb = document.getElementById('vbtn-topup');
+      if (tb) { tb.disabled = true; tb.textContent = '⏳ Redirigiendo a MercadoPago...'; }
+      try {
+        const topupRes = await fetch('/api/video/topup', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json', ...(authToken ? {'Authorization':`Bearer ${authToken}`}:{})},
+          body: JSON.stringify({
+            pack_id: _selectedPack,
+            user_id: userProfile?.id || currentUser?.id || '',
+            user_email: currentUser?.email || ''
+          })
+        });
+        const td = topupRes.ok ? await topupRes.json() : null;
+        if (td?.checkout_url) {
+          window.open(td.checkout_url, '_blank');
+          showToast('💳 Se abrió MercadoPago en nueva pestaña para cargar créditos.', 'info', 6000);
+          closeVideoConfirm(null);
+        } else {
+          showToast('❌ Error al generar el link de pago. Intentá de nuevo.', 'error');
+          if (tb) { tb.disabled = false; tb.textContent = 'Cargar créditos con MercadoPago'; }
+        }
+      } catch(e) {
+        showToast('❌ Error de conexión: ' + e.message, 'error');
+        if (tb) { tb.disabled = false; tb.textContent = 'Cargar créditos con MercadoPago'; }
+      }
+    });
   });
 }
 
 function selectVideoOption(el, modelKey, durationS, priceUsd) {
+  // Helper por si se llama desde otro lado — los handlers reales están en addEventListener
   document.querySelectorAll('.video-option').forEach(e => e.classList.remove('selected'));
   el.classList.add('selected');
   _selectedVideoOption = { model_key: modelKey, duration_s: durationS, user_price_usd: priceUsd };
-  // Actualizar botón generar
-  const btn = document.getElementById('video-gen-btn');
-  if (btn) btn.disabled = priceUsd > (parseFloat(document.querySelector('.video-balance-badge')?.textContent?.replace(/[^0-9.]/g,'') || '0'));
 }
 
 function selectVideoPack(el, packId) {
   document.querySelectorAll('.video-pack').forEach(e => e.classList.remove('selected-pack'));
   el.classList.add('selected-pack');
   _selectedPack = packId;
-  const topupBtn = document.getElementById('video-topup-btn');
-  if (topupBtn) topupBtn.disabled = false;
+  const tb = document.getElementById('vbtn-topup');
+  if (tb) tb.disabled = false;
 }
 
 function closeVideoConfirm(action) {
