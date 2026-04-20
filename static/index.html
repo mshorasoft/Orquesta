@@ -237,6 +237,24 @@ a{color:var(--em-mid);text-decoration:none}
 .toast.warn{background:#e67e22;color:#fff}
 .toast.info{background:var(--em);color:#000}
 @media(max-width:600px){#sidebar{display:none}.bubble{max-width:90%}.mode-bar{display:none}.tts-toggle span{display:none}#screen-pricing{padding:4rem 1rem 2rem}.pricing-cards{flex-direction:column;align-items:center}}
+
+/* ── MODAL CRÉDITOS DE VIDEO ─────────────────────────────── */
+.video-confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+.video-confirm-box{background:var(--surface);border:1px solid rgba(156,39,176,.4);border-radius:16px;padding:24px 28px;max-width:380px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.video-confirm-title{font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.video-confirm-sub{font-size:12px;color:var(--text2);margin-bottom:16px;line-height:1.6}
+.video-confirm-info{background:var(--surface2);border-radius:10px;padding:12px 14px;margin-bottom:16px}
+.video-confirm-info-row{display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px}
+.video-confirm-info-row:last-child{margin-bottom:0}
+.video-confirm-info-label{color:var(--text2)}
+.video-confirm-info-val{color:var(--text);font-weight:500;font-family:var(--font-mono)}
+.video-confirm-btns{display:flex;gap:8px}
+.video-confirm-ok{flex:1;padding:10px;background:linear-gradient(135deg,#9c27b0,#7b1fa2);color:white;border:none;border-radius:8px;font-family:var(--font-body);font-size:13px;font-weight:600;cursor:pointer;transition:opacity .2s}
+.video-confirm-ok:hover{opacity:.85}
+.video-confirm-ok:disabled{opacity:.5;cursor:not-allowed}
+.video-confirm-cancel{padding:10px 16px;background:var(--surface2);color:var(--text2);border:1px solid var(--border2);border-radius:8px;font-family:var(--font-body);font-size:13px;cursor:pointer;transition:background .2s}
+.video-confirm-cancel:hover{background:var(--surface3)}
+.credits-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(156,39,176,.15);border:1px solid rgba(156,39,176,.3);border-radius:20px;padding:2px 8px;font-size:11px;color:#ce93d8;font-family:var(--font-mono)}
 </style>
 </head>
 <body>
@@ -610,7 +628,18 @@ async function refreshPlan() {
 function updateDailyCounter() {
   const el = document.getElementById('daily-counter');
   if (!el) return;
-  if (isPro()) { el.innerHTML = ''; return; }
+  if (isPro()) {
+    // Pro: mostrar créditos de video
+    fetch('/api/video/credits', { headers: authToken ? {'Authorization': `Bearer ${authToken}`} : {} })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        const cls = d.available === 0 ? 'empty' : d.available <= 2 ? 'low' : '';
+        el.innerHTML = `<div class="daily-badge ${cls}" title="Créditos de video disponibles este mes">🎬 ${d.available} crédito${d.available !== 1 ? 's' : ''} video</div>`;
+      })
+      .catch(() => { el.innerHTML = ''; });
+    return;
+  }
   const used = getFreeCount();
   const rem = Math.max(0, FREE_LIMIT - used);
   const cls = rem<=3?'empty':rem<=8?'low':'';
@@ -920,8 +949,18 @@ function addMsg(role,content,meta,imgUrl,filename,fileData,ttsUrl,videoUrl,isUpg
     if(videoUrl&&!isUpgrade){
       const vw=document.createElement('div'); vw.className='video-container';
       const vid=document.createElement('video'); vid.className='gen-video'; vid.controls=true;
-      vid.oncanplay=()=>{ vw.innerHTML=''; vw.appendChild(vid); const acts=document.createElement('div'); acts.className='video-actions'; acts.innerHTML=`<a href="${videoUrl}" target="_blank" class="video-link-btn">⬇️ Descargar</a>`; vw.appendChild(acts); wrap.scrollTop=wrap.scrollHeight; };
-      vid.onerror=()=>{ vw.innerHTML=`<div class="video-actions"><a href="${videoUrl}" target="_blank" class="video-link-btn">▶️ Ver video</a></div>`; };
+      vid.oncanplay=()=>{
+        vw.innerHTML=''; vw.appendChild(vid);
+        const acts=document.createElement('div'); acts.className='video-actions';
+        // Usar proxy de descarga para forzar download en vez de abrir en pestaña
+        const dlUrl = `/api/video/download?url=${encodeURIComponent(videoUrl)}&filename=orquesta_video.mp4`;
+        acts.innerHTML=`<a href="${dlUrl}" download="orquesta_video.mp4" class="video-link-btn">⬇️ Descargar MP4</a><a href="${videoUrl}" target="_blank" class="video-link-btn" style="margin-left:6px;background:rgba(29,158,117,0.15);border-color:rgba(29,158,117,0.4);color:var(--em-mid);">▶️ Ver</a>`;
+        vw.appendChild(acts); wrap.scrollTop=wrap.scrollHeight;
+      };
+      vid.onerror=()=>{
+        const dlUrl = `/api/video/download?url=${encodeURIComponent(videoUrl)}&filename=orquesta_video.mp4`;
+        vw.innerHTML=`<div class="video-actions"><a href="${dlUrl}" download="orquesta_video.mp4" class="video-link-btn">⬇️ Descargar MP4</a><a href="${videoUrl}" target="_blank" class="video-link-btn" style="margin-left:6px;">▶️ Ver video</a></div>`;
+      };
       vid.src=videoUrl; bubble.appendChild(vw);
     }
     if(ttsUrl&&role==='ai'&&!isUpgrade){
@@ -1063,6 +1102,62 @@ function showVideoProgress(typingEl) {
   return timer;
 }
 
+
+// ══════════════════════════════════════════════════════════════
+//  MODAL CONFIRMACIÓN DE VIDEO
+// ══════════════════════════════════════════════════════════════
+let _videoConfirmResolve = null;
+
+function showVideoConfirmModal(confirmData) {
+  return new Promise((resolve) => {
+    _videoConfirmResolve = resolve;
+    const av = confirmData.credits_available ?? 0;
+    const monthly = confirmData.monthly_allowance ?? 0;
+    const model = confirmData.model_hint ?? 'Wan2.1 720p';
+    const cost = confirmData.estimated_cost_usd ?? 0.80;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'video-confirm-overlay';
+    overlay.id = 'video-confirm-overlay';
+    overlay.innerHTML = `
+      <div class="video-confirm-box">
+        <div class="video-confirm-title">🎬 Generar video con IA</div>
+        <div class="video-confirm-sub">Esto usará 1 crédito de video de tu Plan Pro. El proceso puede tardar entre 2 y 5 minutos.</div>
+        <div class="video-confirm-info">
+          <div class="video-confirm-info-row">
+            <span class="video-confirm-info-label">Modelo</span>
+            <span class="video-confirm-info-val">${model}</span>
+          </div>
+          <div class="video-confirm-info-row">
+            <span class="video-confirm-info-label">Costo Replicate</span>
+            <span class="video-confirm-info-val">~$${cost.toFixed(2)} USD</span>
+          </div>
+          <div class="video-confirm-info-row">
+            <span class="video-confirm-info-label">Créditos disponibles</span>
+            <span class="video-confirm-info-val" style="color:${av===0?'var(--coral)':av<=2?'var(--amber)':'var(--em)'}">
+              ${av} / ${monthly} este mes
+            </span>
+          </div>
+        </div>
+        ${av === 0 ? `<div style="background:rgba(216,90,48,0.1);border:1px solid rgba(216,90,48,0.3);border-radius:8px;padding:10px;font-size:12px;color:var(--coral);margin-bottom:12px;">
+          Sin créditos disponibles. Esperá al mes próximo o comprá un pack extra.
+        </div>` : ''}
+        <div class="video-confirm-btns">
+          <button class="video-confirm-cancel" onclick="closeVideoConfirm(false)">Cancelar</button>
+          <button class="video-confirm-ok" ${av===0?'disabled':''} onclick="closeVideoConfirm(true)">
+            ${av > 0 ? '🎬 Confirmar y generar' : '❌ Sin créditos'}
+          </button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+  });
+}
+
+function closeVideoConfirm(confirmed) {
+  document.getElementById('video-confirm-overlay')?.remove();
+  if (_videoConfirmResolve) { _videoConfirmResolve(confirmed); _videoConfirmResolve = null; }
+}
+
 async function send(){
   if(loading)return;
   const inp=document.getElementById('prompt-input');
@@ -1072,6 +1167,26 @@ async function send(){
   if(authToken && !userProfile) await loadUserProfile();
   // ── CHEQUEO PLAN FREE ──
   const _userIsPro = !!(userProfile?.is_pro || userProfile?.plan === 'pro');
+
+  // ── MODAL DE CONFIRMACIÓN PARA VIDEOS ──
+  if (isVideoPrompt(prompt) && _userIsPro) {
+    try {
+      const confirmRes = await fetch('/api/video/confirm', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json', ...(authToken ? {'Authorization':`Bearer ${authToken}`} : {})},
+        body: JSON.stringify({ prompt })
+      });
+      const confirmData = confirmRes.ok ? await confirmRes.json() : null;
+      if (confirmData) {
+        const confirmed = await showVideoConfirmModal(confirmData);
+        if (!confirmed) {
+          // Usuario canceló — restaurar UI
+          document.getElementById('send-btn').disabled = false;
+          return;
+        }
+      }
+    } catch(e) { console.warn('Video confirm check failed:', e); }
+  }
   console.log('CHEQUEO INICIO → _userIsPro:', _userIsPro, '| requiresPro:', requiresPro(prompt, !!pendingFile), '| userProfile:', JSON.stringify({plan:userProfile?.plan,is_pro:userProfile?.is_pro}));
   // NUNCA bloquear si es Pro
   if(requiresPro(prompt, !!pendingFile) && !_userIsPro){
@@ -1163,7 +1278,13 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
         activeHistory.push({role:'assistant',content:data.result});
       }
     }
-    if(typeof data.daily_remaining==='number'&&userProfile){ userProfile.daily_remaining=data.daily_remaining; updateDailyCounter(); }
+    if(typeof data.daily_remaining==='number'&&userProfile){ userProfile.daily_remaining=data.daily_remaining; }
+    if(typeof data.video_credits_remaining==='number'&&data.video_credits_remaining>=0){
+      // Actualizar badge de créditos de video
+      updateDailyCounter();
+    } else {
+      updateDailyCounter();
+    }
     saveLocalHistory(); renderHist();
   } catch(err){
     if (_vidTimer) clearInterval(_vidTimer);
