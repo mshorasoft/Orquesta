@@ -62,6 +62,12 @@ MP_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
 # ── LÍMITES ───────────────────────────────────────────────────────────────────
 FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "20"))
 
+# ── CRÉDITOS DE VIDEO ─────────────────────────────────────────────────────────
+# Pro mensual/anual recibe N créditos gratis al mes. Extra se pueden comprar.
+VIDEO_CREDITS_PRO_MONTHLY = int(os.getenv("VIDEO_CREDITS_PRO_MONTHLY", "5"))
+VIDEO_CREDITS_PRO_ANNUAL  = int(os.getenv("VIDEO_CREDITS_PRO_ANNUAL",  "10"))
+VIDEO_CREDITS_FREE        = int(os.getenv("VIDEO_CREDITS_FREE", "0"))  # Free: 0 créditos de video
+
 # ── RATE LIMITING por IP ──────────────────────────────────────────────────────
 from collections import defaultdict
 _ip_requests: dict = defaultdict(list)  # ip -> [timestamps]
@@ -830,11 +836,88 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={seed}&nofeed=true"
     return url, "🎨 Imagen generada.", "pollinations · imagen"
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CRÉDITOS DE VIDEO
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_video_credits(user: dict) -> dict:
+    """
+    Retorna los créditos de video del usuario.
+    Estructura: {"available": int, "used_this_month": int, "monthly_allowance": int}
+    Primero busca en Supabase tabla video_credits, si no existe usa defaults.
+    """
+    if not user or not supabase:
+        return {"available": 0, "used_this_month": 0, "monthly_allowance": 0}
+
+    is_pro = (
+        user.get("plan") == "pro" and (
+            user.get("plan_expires_at") is None or
+            parse_expiry(user["plan_expires_at"]) > datetime.now(timezone.utc)
+        )
+    )
+
+    if not is_pro:
+        return {"available": VIDEO_CREDITS_FREE, "used_this_month": 0, "monthly_allowance": VIDEO_CREDITS_FREE}
+
+    monthly_allowance = VIDEO_CREDITS_PRO_ANNUAL if "annual" in (user.get("plan_type") or "") else VIDEO_CREDITS_PRO_MONTHLY
+
+    try:
+        now = datetime.now(timezone.utc)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+        result = supabase.table("video_credits")            .select("*")            .eq("user_id", user["id"])            .gte("created_at", month_start)            .execute()
+
+        used_this_month = len(result.data or [])
+        # Buscar créditos extra comprados
+        extra_result = supabase.table("video_credit_packs")            .select("credits_remaining")            .eq("user_id", user["id"])            .gt("credits_remaining", 0)            .execute()
+        extra = sum(r.get("credits_remaining", 0) for r in (extra_result.data or []))
+
+        available = max(0, (monthly_allowance - used_this_month) + extra)
+        return {
+            "available": available,
+            "used_this_month": used_this_month,
+            "monthly_allowance": monthly_allowance,
+            "extra_credits": extra,
+        }
+    except Exception as e:
+        print(f"get_video_credits error: {e}")
+        # Si la tabla no existe aún, dar créditos por defecto a Pro
+        return {"available": monthly_allowance, "used_this_month": 0, "monthly_allowance": monthly_allowance}
+
+
+async def consume_video_credit(user: dict, model_used: str, prompt_preview: str) -> bool:
+    """
+    Descuenta 1 crédito de video al usuario.
+    Retorna True si se pudo descontar, False si no hay créditos.
+    """
+    if not user or not supabase:
+        return False
+
+    credits = await get_video_credits(user)
+    if credits["available"] <= 0:
+        return False
+
+    try:
+        # Registrar el uso
+        supabase.table("video_credits").insert({
+            "user_id": user["id"],
+            "model_used": model_used,
+            "prompt_preview": prompt_preview[:100],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"consume_video_credit error: {e}")
+        # Si la tabla no existe, igual permitir el video
+        return True
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  VIDEO GENERATION  — cascada: Motor propio → Replicate → FAL.ai → ModelsLab → descripción
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def generate_video_smart(prompt: str, history=None, mode="general", username="") -> tuple[str, str, str]:
+async def generate_video_smart(prompt: str, history=None, mode="general", username="", user: dict = None) -> tuple[str, str, str]:
     import urllib.parse
 
     VIDEOGEN_URL  = os.getenv("VIDEOGEN_URL", "").rstrip("/")
@@ -846,18 +929,30 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
     async def enhance(p):
         try:
             msgs = [
-                {"role":"system","content":"You are a video generation expert. Rewrite the user request as a detailed AI video prompt in English. Include: camera movement, lighting style, mood, action, visual style (cinematic, 4K, photorealistic). Max 80 words. Reply ONLY with the enhanced prompt."},
+                {"role":"system","content":"""You are a world-class AI video prompt engineer specialized in Wan2.1, LTX-Video and Minimax video models.
+Transform the user request into a hyper-detailed, cinematic video prompt in English.
+
+RULES:
+1. Always describe REAL, PHOTOREALISTIC scenes — never cartoons or animations unless explicitly requested
+2. Include: exact camera movement (slow dolly, aerial crane shot, handheld tracking), lens type (anamorphic 35mm), lighting (golden hour, stadium floodlights, volumetric rays), texture details, actor/character behavior
+3. For sports/stadium scenes: packed crowd reacting, real grass texture, jersey details, ball physics, broadcast-style angles
+4. For fantasy/creative requests: still photorealistic lighting and physics, only the subject is fantastical
+5. End with: ", 4K HDR, cinematic color grading, ultra-sharp, professional cinematography, 24fps"
+6. CRITICAL: Wan2.1 responds best to long, extremely specific English prompts (150-200 words)
+7. NEVER use words like: cartoon, animated, 3D render, CGI, illustration — unless user explicitly asks for it
+8. Max 250 words. Reply ONLY with the enhanced prompt, no explanations."""},
                 {"role":"user","content":f"Video request: {p}"}
             ]
             enhanced, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
-            return enhanced.strip()[:300]
+            return enhanced.strip()[:500]
         except:
             return p
 
     async def replicate_poll(pred_id: str, model_name: str) -> str | None:
         """Polling genérico para predictions de Replicate. Retorna video_url o None."""
-        async with httpx.AsyncClient(timeout=200) as c:
-            for attempt in range(24):  # hasta 4 minutos (24 x 10s)
+        max_attempts = 36 if "720p" in model_name else 24  # 720p: 6min, resto: 4min
+        async with httpx.AsyncClient(timeout=400) as c:
+            for attempt in range(max_attempts):  # 720p hasta 6 min, 480p hasta 4 min
                 await asyncio.sleep(10)
                 r = await c.get(
                     f"https://api.replicate.com/v1/predictions/{pred_id}",
@@ -901,13 +996,26 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
     if REPLICATE_KEY:
         replicate_models = [
             {
+                "name": "wan-2.1-720p",
+                "url": "https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-720p/predictions",
+                "input": {
+                    "prompt": enhanced,
+                    "negative_prompt": "cartoon, animated, 3D render, CGI, illustration, low quality, blurry, distorted, watermark, text, deformed, ugly, bad anatomy, worst quality",
+                    "num_frames": 81,
+                    "sample_steps": 30,
+                    "sample_guide_scale": 7.5,
+                    "fast_mode": "Off",
+                },
+            },
+            {
                 "name": "wan-2.1-480p",
                 "url": "https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-480p/predictions",
                 "input": {
                     "prompt": enhanced,
+                    "negative_prompt": "cartoon, animated, 3D render, CGI, illustration, low quality, blurry, distorted, watermark, text, deformed",
                     "num_frames": 81,
-                    "sample_steps": 20,
-                    "sample_guide_scale": 5,
+                    "sample_steps": 25,
+                    "sample_guide_scale": 7.0,
                     "fast_mode": "Balanced",
                 },
             },
@@ -920,14 +1028,24 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                 },
             },
             {
+                "name": "minimax-video-01-live",
+                "url": "https://api.replicate.com/v1/models/minimax/video-01-live/predictions",
+                "input": {
+                    "prompt": enhanced,
+                    "prompt_optimizer": True,
+                },
+            },
+            {
                 "name": "ltx-video",
                 "url": "https://api.replicate.com/v1/predictions",
                 "version": "8c15b830f14b8e4aea31c3e3ac5a03ea13ae3aaf446a1f1f0b9e07ba21baa9b2",
                 "input": {
                     "prompt": enhanced,
-                    "negative_prompt": "low quality, blurry, distorted, watermark",
+                    "negative_prompt": "cartoon, animated, 3D render, CGI, illustration, low quality, blurry, distorted, watermark, text, deformed, ugly, bad anatomy, artifacts, noise",
                     "num_frames": 121,
                     "frame_rate": 25,
+                    "guidance_scale": 7.5,
+                    "num_inference_steps": 40,
                 },
             },
         ]
@@ -960,7 +1078,15 @@ async def generate_video_smart(prompt: str, history=None, mode="general", userna
                 video_url = await replicate_poll(pred_id, model["name"])
                 if video_url:
                     print(f"✅ Video OK con {model['name']}: {video_url}")
-                    return video_url, f"🎬 Video generado con **Replicate** ({model['name']}).", f"replicate · {model['name']}"
+                    # Consumir crédito si hay usuario
+                    if user:
+                        await consume_video_credit(user, model["name"], prompt[:80])
+                    cost_note = ""
+                    if "720p" in model["name"]: cost_note = "\n\n> 💡 *Wan2.1 720p · 1 crédito de video usado*"
+                    elif "480p" in model["name"]: cost_note = "\n\n> 💡 *Wan2.1 480p · 1 crédito de video usado*"
+                    elif "minimax" in model["name"]: cost_note = "\n\n> 💡 *Minimax Video · 1 crédito de video usado*"
+                    else: cost_note = "\n\n> 💡 *1 crédito de video usado*"
+                    return video_url, f"🎬 Video generado con **Replicate** ({model['name']}).{cost_note}", f"replicate · {model['name']}"
                 else:
                     errors[model["name"]] = "failed o timeout en polling"
 
@@ -1227,6 +1353,7 @@ class OrchestrateResp(BaseModel):
     video_url: str = ""
     is_pro: bool = False
     daily_remaining: int = -1
+    video_credits_remaining: int = -1   # -1 = no aplica
     upgrade_banner: str = ""
     upgrade_cta: str = ""
     upgrade_cta_url: str = ""
@@ -1330,6 +1457,7 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
         print(f"📝 Feedback registrado y análisis disparado automáticamente")
 
     img_url = file_url = file_type = file_name = tts_url = result = video_url = ""
+    label = "orquesta · llama 3.3"   # default siempre definido
     system = get_system(req.mode, username, req.history)
     is_pro = user.get("plan") == "pro" if user else False
     daily_remaining = -1
@@ -1371,7 +1499,7 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
                         result = f"No pude generar el archivo. Reformulá el pedido con más detalle."
 
         elif task == "video_gen":
-            video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, username)
+            video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, username, user=user)
 
         elif task == "image_gen":
             img_url, result, label = await generate_image_smart(req.prompt)
@@ -1472,6 +1600,15 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
     except HTTPException: raise
     except Exception as e: raise HTTPException(502, detail=str(e))
 
+    # Consultar créditos de video si se usó video_gen
+    video_credits_remaining = -1
+    if task == "video_gen" and user:
+        try:
+            vc = await get_video_credits(user)
+            video_credits_remaining = vc.get("available", -1)
+        except Exception:
+            pass
+
     return OrchestrateResp(
         result=result, task_type=task, model_label=label,
         latency_ms=int((time.time()-t0)*1000),
@@ -1479,6 +1616,7 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
         file_name=file_name, tts_url=tts_url, video_url=video_url,
         is_pro=is_pro,
         daily_remaining=daily_remaining,
+        video_credits_remaining=video_credits_remaining,
     )
 
 
@@ -2379,7 +2517,7 @@ async def orchestrate_stream(req: OrchestrateReq, request: Request, authorizatio
         async def video_stream_gen():
             yield f"data: {json.dumps({'text': '⏳ Generando tu video con IA...', 'done': False})}\n\n"
             try:
-                video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, username)
+                video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, username, user=user)
                 payload = {"text": result, "done": True, "label": label}
                 if video_url:
                     payload["video_url"] = video_url
@@ -2444,6 +2582,120 @@ async def orchestrate_stream(req: OrchestrateReq, request: Request, authorizatio
     return SR(stream_gen(), media_type="text/event-stream",
               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ENDPOINTS DE CRÉDITOS DE VIDEO
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/video/credits")
+async def get_my_video_credits(authorization: str = Header(None)):
+    """Retorna créditos de video disponibles para el usuario."""
+    user = await get_optional_user(authorization)
+    if not user:
+        return {"available": 0, "used_this_month": 0, "monthly_allowance": 0, "is_pro": False}
+    credits = await get_video_credits(user)
+    credits["is_pro"] = user.get("plan") == "pro"
+    return credits
+
+
+@router.post("/video/confirm")
+async def confirm_video_generation(data: dict, authorization: str = Header(None)):
+    """
+    Verifica si el usuario puede generar un video y retorna info de costo.
+    El frontend llama esto ANTES de generar, para mostrar el modal de confirmación.
+    """
+    user = await get_optional_user(authorization)
+    if not user:
+        return {
+            "can_generate": False,
+            "reason": "no_auth",
+            "message": "Iniciá sesión para generar videos.",
+        }
+
+    is_pro = user.get("plan") == "pro"
+    if not is_pro:
+        return {
+            "can_generate": False,
+            "reason": "not_pro",
+            "message": "La generación de videos es exclusiva del Plan Pro.",
+        }
+
+    credits = await get_video_credits(user)
+    prompt = data.get("prompt", "")
+
+    # Estimar modelo y costo
+    p_lower = prompt.lower()
+    estimated_cost = 0.80  # default 720p
+    model_hint = "Wan2.1 720p (mejor calidad)"
+
+    return {
+        "can_generate": credits["available"] > 0,
+        "credits_available": credits["available"],
+        "credits_used_this_month": credits["used_this_month"],
+        "monthly_allowance": credits["monthly_allowance"],
+        "estimated_cost_usd": estimated_cost,
+        "model_hint": model_hint,
+        "reason": "ok" if credits["available"] > 0 else "no_credits",
+        "message": (
+            f"Tenés {credits['available']} crédito(s) de video disponibles este mes."
+            if credits["available"] > 0
+            else "Sin créditos de video disponibles. Podés comprar un pack extra."
+        ),
+    }
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  VIDEO DOWNLOAD PROXY — Descarga forzada sin CORS issues
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/video/download")
+async def download_video(url: str, filename: str = "orquesta_video.mp4"):
+    """
+    Proxy de descarga para videos generados por Replicate/FAL/ModelsLab.
+    Fuerza el header Content-Disposition para que el browser descargue en vez de abrir.
+    """
+    if not url:
+        raise HTTPException(400, "URL requerida")
+
+    # Solo permitir dominios conocidos de generación de video
+    allowed_domains = [
+        "replicate.delivery", "pbxt.replicate.delivery", "api.replicate.com",
+        "fal.media", "cdn.fal.ai", "v3.fal.media",
+        "modelslab.com", "cdn.modelslab.com",
+        "up.railway.app",  # motor propio
+    ]
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not any(d in (parsed.netloc or "") for d in allowed_domains):
+        raise HTTPException(403, f"Dominio no permitido: {parsed.netloc}")
+
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as c:
+            r = await c.get(url)
+            if not r.is_success:
+                raise HTTPException(502, f"Error al obtener el video: HTTP {r.status_code}")
+
+            content_type = r.headers.get("content-type", "video/mp4")
+            # Forzar extensión correcta
+            if "webm" in content_type:
+                filename = filename.replace(".mp4", ".webm")
+            elif "quicktime" in content_type or "mov" in content_type:
+                filename = filename.replace(".mp4", ".mov")
+
+            return Response(
+                content=r.content,
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(len(r.content)),
+                    "Cache-Control": "no-cache",
+                }
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error en proxy de descarga: {str(e)}")
 
 @router.get("/status")
 async def status():
