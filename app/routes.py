@@ -2531,6 +2531,121 @@ async def video_topup(req: VideoTopupReq, authorization: str = Header(None)):
         }
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  VERIFICACIÓN MANUAL DE PAGO MP — el usuario lo llama al volver de MP
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/video/verify-payment")
+async def verify_video_payment(data: dict, authorization: str = Header(None)):
+    """
+    El frontend lo llama cuando el usuario vuelve de MercadoPago.
+    Verifica el pago directo en MP API y acredita si está aprobado.
+    """
+    user = await get_optional_user(authorization)
+    if not user and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        try:
+            token = (authorization or "").replace("Bearer ", "").strip()
+            parts = token.split(".")
+            if len(parts) == 3:
+                pad = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                jwt_p = json.loads(base64.urlsafe_b64decode(pad))
+                auth_id = jwt_p.get("sub", "")
+                if auth_id:
+                    async with httpx.AsyncClient(timeout=8) as hx:
+                        r = await hx.get(
+                            f"{SUPABASE_URL}/rest/v1/users?auth_id=eq.{auth_id}&select=*&limit=1",
+                            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"}
+                        )
+                        if r.is_success and r.json():
+                            user = r.json()[0]
+        except Exception as e:
+            print(f"verify-payment auth fallback: {e}")
+
+    if not user:
+        raise HTTPException(401, "No autenticado")
+
+    pack_id = data.get("pack_id", "")
+    preference_id = data.get("preference_id", "")
+
+    if not MP_ACCESS_TOKEN:
+        raise HTTPException(500, "MercadoPago no configurado")
+
+    # Buscar pagos recientes del usuario en MP
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            # Buscar por external_reference que contiene user_id
+            search_url = f"https://api.mercadopago.com/v1/payments/search"
+            r = await c.get(search_url, headers={"Authorization": f"Bearer {MP_ACCESS_TOKEN}"},
+                params={"external_reference": f"video_topup|{user['id']}", "sort": "date_created", "criteria": "desc", "range": "date_created", "begin_date": "NOW-1DAYS", "end_date": "NOW"})
+            results = r.json().get("results", []) if r.is_success else []
+
+            # Buscar el pago aprobado más reciente
+            approved = [p for p in results if p.get("status") == "approved"]
+            if not approved:
+                # También buscar por preference_id si lo tenemos
+                current_balance = await get_video_credits(user)
+                return {
+                    "credited": False,
+                    "balance_usd": current_balance["balance_usd"],
+                    "message": "Pago pendiente o no encontrado. El webhook llegará en breve."
+                }
+
+            payment = approved[0]
+            payment_id = str(payment["id"])
+            amount_usd = float(payment.get("transaction_amount", 0))
+
+            # Verificar si este pago ya fue acreditado (buscar en payment_events)
+            already_credited = False
+            try:
+                ev = supabase.table("payment_events").select("id").eq("event_id", payment_id).execute()
+                already_credited = bool(ev.data)
+            except Exception:
+                pass
+
+            if not already_credited and amount_usd > 0:
+                # Acreditar el saldo
+                try:
+                    existing = supabase.table("video_balance").select("balance_usd").eq("user_id", user["id"]).execute()
+                    if existing.data:
+                        new_bal = round(float(existing.data[0].get("balance_usd", 0)) + amount_usd, 4)
+                        supabase.table("video_balance").update({"balance_usd": new_bal, "updated_at": datetime.now(timezone.utc).isoformat()}).eq("user_id", user["id"]).execute()
+                    else:
+                        supabase.table("video_balance").insert({"user_id": user["id"], "balance_usd": amount_usd, "updated_at": datetime.now(timezone.utc).isoformat()}).execute()
+
+                    # Registrar para no duplicar
+                    try:
+                        supabase.table("payment_events").insert({
+                            "provider": "mercadopago",
+                            "event_type": "video_topup.verified",
+                            "event_id": payment_id,
+                            "amount": int(amount_usd * 100),
+                            "currency": "USD",
+                            "plan": pack_id or "video_topup",
+                            "status": "success",
+                            "raw_payload": payment,
+                        }).execute()
+                    except Exception:
+                        pass
+
+                    print(f"✅ Pago verificado y acreditado: ${amount_usd} USD → {user['id'][:8]}")
+                    credits = await get_video_credits(user)
+                    return {"credited": True, "balance_usd": credits["balance_usd"], "amount_credited": amount_usd}
+
+                except Exception as e:
+                    print(f"Error acreditando en verify-payment: {e}")
+                    raise HTTPException(500, f"Error al acreditar: {str(e)}")
+
+            # Ya estaba acreditado
+            credits = await get_video_credits(user)
+            return {"credited": already_credited, "balance_usd": credits["balance_usd"], "message": "Ya acreditado previamente"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"verify-payment error: {e}")
+        raise HTTPException(502, f"Error verificando pago: {str(e)[:100]}")
+
 @router.get("/video/balance")
 async def get_video_balance(authorization: str = Header(None)):
     """Retorna el saldo de video del usuario en USD."""
