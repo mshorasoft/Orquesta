@@ -1373,27 +1373,39 @@ function closeVideoConfirm(action) {
 
 
 function showTopupModal() {
-  // El badge de saldo abre el modal directamente
-  // El modal maneja todo internamente con addEventListener
   if (!currentUser) { showToast('Iniciá sesión para cargar créditos de video.', 'warn'); return; }
-  const headers = authToken ? {'Content-Type':'application/json','Authorization':`Bearer ${authToken}`} : {'Content-Type':'application/json'};
-  fetch('/api/video/balance', { headers })
-    .then(r => r.ok ? r.json() : {balance_usd: 0, is_pro: false, prices: []})
-    .then(async balData => {
-      // Construir confirmData compatible con showVideoConfirmModal
-      const prices = (balData.prices && balData.prices.length > 0) ? balData.prices.map(p => ({
-        ...p, can_afford: (balData.balance_usd || 0) >= p.user_price_usd
-      })) : [];
-      const confirmData = {
-        balance_usd: balData.balance_usd || 0,
-        can_generate: prices.some(p => p.can_afford),
-        prices
-      };
-      await showVideoConfirmModal(confirmData);
-      // Después de cerrar el modal, actualizar el badge
-      setTimeout(updateDailyCounter, 1500);
+  // Abrir el modal con saldo 0 de inmediato, luego actualizar con datos reales
+  const defaultConfirm = { balance_usd: 0, can_generate: false, prices: [] };
+  showVideoConfirmModal(defaultConfirm);
+  // Cargar saldo real en background
+  const hdrs = {'Content-Type':'application/json', ...(authToken ? {'Authorization':`Bearer ${authToken}`} : {})};
+  fetch('/api/video/balance', { headers: hdrs })
+    .then(r => r.ok ? r.json() : null)
+    .then(balData => {
+      if (!balData) return;
+      // Actualizar badge de saldo en el modal ya abierto
+      const badge = document.getElementById('vbal-badge');
+      if (badge) badge.textContent = `💰 Saldo: $${(balData.balance_usd || 0).toFixed(2)} USD`;
+      // Actualizar opacidad de opciones según saldo
+      const balance = balData.balance_usd || 0;
+      document.querySelectorAll('.video-option').forEach(opt => {
+        const price = parseFloat(opt.querySelector('.video-option-price')?.textContent?.replace(/[^0-9.]/g,'') || '999');
+        opt.style.opacity = balance >= price ? '1' : '0.5';
+        if (balance >= price) opt.classList.remove('disabled-opt');
+      });
+      // Actualizar mensaje de saldo insuficiente
+      const insuf = document.getElementById('vinsuf-msg');
+      if (insuf) insuf.style.display = balance > 0 ? 'none' : 'block';
+      // Habilitar botón generar si puede pagar la opción seleccionada
+      const genBtn = document.getElementById('vbtn-gen');
+      if (genBtn && _selectedVideoOption) {
+        genBtn.disabled = balance < (_selectedVideoOption.user_price_usd || 0.70);
+      }
     })
-    .catch(() => showToast('Error al cargar el saldo. Intentá de nuevo.', 'error'));
+    .catch(e => {
+      console.warn('video/balance error:', e);
+      // No mostrar error rojo — el modal ya está abierto con saldo 0
+    });
 }
 
 async function send(){
