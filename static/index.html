@@ -1295,25 +1295,27 @@ function closeVideoConfirm(action) {
 
 
 function showTopupModal() {
-  if (!_userIsPro || !authToken) { showToast('Iniciá sesión con Plan Pro para cargar créditos de video.', 'warn'); return; }
-  fetch('/api/video/confirm', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json','Authorization':`Bearer ${authToken}`},
-    body: JSON.stringify({prompt:''})
-  }).then(r=>r.ok?r.json():null).then(async d => {
-    if (!d) return;
-    const result = await showVideoConfirmModal(d);
-    if (result?.action === 'topup' && result.pack_id) {
-      const topupRes = await fetch('/api/video/topup', {
-        method:'POST',
-        headers:{'Content-Type':'application/json','Authorization':`Bearer ${authToken}`},
-        body:JSON.stringify({pack_id:result.pack_id,user_id:userProfile?.id||'',user_email:currentUser?.email||''})
-      });
-      const td = topupRes.ok ? await topupRes.json() : null;
-      if (td?.checkout_url) { window.open(td.checkout_url,'_blank'); showToast('💳 Abriendo MercadoPago...','info',4000); }
-    }
-    updateDailyCounter();
-  });
+  // El badge de saldo abre el modal directamente
+  // El modal maneja todo internamente con addEventListener
+  if (!currentUser) { showToast('Iniciá sesión para cargar créditos de video.', 'warn'); return; }
+  const headers = authToken ? {'Content-Type':'application/json','Authorization':`Bearer ${authToken}`} : {'Content-Type':'application/json'};
+  fetch('/api/video/balance', { headers })
+    .then(r => r.ok ? r.json() : {balance_usd: 0, is_pro: false, prices: []})
+    .then(async balData => {
+      // Construir confirmData compatible con showVideoConfirmModal
+      const prices = (balData.prices && balData.prices.length > 0) ? balData.prices.map(p => ({
+        ...p, can_afford: (balData.balance_usd || 0) >= p.user_price_usd
+      })) : [];
+      const confirmData = {
+        balance_usd: balData.balance_usd || 0,
+        can_generate: prices.some(p => p.can_afford),
+        prices
+      };
+      await showVideoConfirmModal(confirmData);
+      // Después de cerrar el modal, actualizar el badge
+      setTimeout(updateDailyCounter, 1500);
+    })
+    .catch(() => showToast('Error al cargar el saldo. Intentá de nuevo.', 'error'));
 }
 
 async function send(){
