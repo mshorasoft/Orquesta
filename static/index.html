@@ -238,23 +238,37 @@ a{color:var(--em-mid);text-decoration:none}
 .toast.info{background:var(--em);color:#000}
 @media(max-width:600px){#sidebar{display:none}.bubble{max-width:90%}.mode-bar{display:none}.tts-toggle span{display:none}#screen-pricing{padding:4rem 1rem 2rem}.pricing-cards{flex-direction:column;align-items:center}}
 
-/* ── MODAL CRÉDITOS DE VIDEO ─────────────────────────────── */
-.video-confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
-.video-confirm-box{background:var(--surface);border:1px solid rgba(156,39,176,.4);border-radius:16px;padding:24px 28px;max-width:380px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.6)}
-.video-confirm-title{font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:8px}
+/* ── MODAL VIDEO IA ──────────────────────────────────────── */
+.video-confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)}
+.video-confirm-box{background:var(--surface);border:1px solid rgba(156,39,176,.35);border-radius:18px;padding:24px 28px;max-width:420px;width:92%;box-shadow:0 24px 80px rgba(0,0,0,.7);max-height:90vh;overflow-y:auto}
+.video-confirm-title{font-size:16px;font-weight:600;color:var(--text);margin-bottom:4px;display:flex;align-items:center;gap:8px}
 .video-confirm-sub{font-size:12px;color:var(--text2);margin-bottom:16px;line-height:1.6}
-.video-confirm-info{background:var(--surface2);border-radius:10px;padding:12px 14px;margin-bottom:16px}
-.video-confirm-info-row{display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px}
-.video-confirm-info-row:last-child{margin-bottom:0}
-.video-confirm-info-label{color:var(--text2)}
-.video-confirm-info-val{color:var(--text);font-weight:500;font-family:var(--font-mono)}
-.video-confirm-btns{display:flex;gap:8px}
-.video-confirm-ok{flex:1;padding:10px;background:linear-gradient(135deg,#9c27b0,#7b1fa2);color:white;border:none;border-radius:8px;font-family:var(--font-body);font-size:13px;font-weight:600;cursor:pointer;transition:opacity .2s}
+.video-balance-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(29,158,117,.12);border:1px solid rgba(29,158,117,.3);border-radius:20px;padding:4px 12px;font-size:12px;color:var(--em-mid);font-family:var(--font-mono);margin-bottom:14px}
+.video-options-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px}
+.video-option{background:var(--surface2);border:2px solid var(--border2);border-radius:10px;padding:10px 12px;cursor:pointer;transition:all .15s;position:relative}
+.video-option:hover{border-color:rgba(156,39,176,.5);background:rgba(156,39,176,.05)}
+.video-option.selected{border-color:#9c27b0;background:rgba(156,39,176,.1)}
+.video-option-name{font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px}
+.video-option-detail{font-size:10px;color:var(--text2);line-height:1.4}
+.video-option-price{font-size:13px;font-weight:700;color:#ce93d8;font-family:var(--font-mono);margin-top:6px}
+.video-option-badge{position:absolute;top:6px;right:6px;background:rgba(29,158,117,.2);border:1px solid var(--em);border-radius:4px;padding:1px 5px;font-size:9px;color:var(--em);font-weight:600}
+.video-insufficient{background:rgba(216,90,48,.08);border:1px solid rgba(216,90,48,.3);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--coral);margin-bottom:12px;line-height:1.5}
+.video-topup-section{border-top:1px solid var(--border);padding-top:14px;margin-top:4px}
+.video-topup-title{font-size:11px;font-weight:600;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:10px}
+.video-packs-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:12px}
+.video-pack{background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:8px 10px;cursor:pointer;transition:all .15s;text-align:center}
+.video-pack:hover{border-color:var(--em);background:rgba(29,158,117,.06)}
+.video-pack.selected-pack{border-color:var(--em);background:rgba(29,158,117,.1)}
+.video-pack-price{font-size:15px;font-weight:700;color:var(--em-mid);font-family:var(--font-mono)}
+.video-pack-desc{font-size:10px;color:var(--text3);margin-top:2px;line-height:1.3}
+.video-confirm-btns{display:flex;gap:8px;margin-top:14px}
+.video-confirm-ok{flex:1;padding:11px;background:linear-gradient(135deg,#9c27b0,#7b1fa2);color:white;border:none;border-radius:9px;font-family:var(--font-body);font-size:13px;font-weight:600;cursor:pointer;transition:opacity .2s}
 .video-confirm-ok:hover{opacity:.85}
-.video-confirm-ok:disabled{opacity:.5;cursor:not-allowed}
-.video-confirm-cancel{padding:10px 16px;background:var(--surface2);color:var(--text2);border:1px solid var(--border2);border-radius:8px;font-family:var(--font-body);font-size:13px;cursor:pointer;transition:background .2s}
+.video-confirm-ok:disabled{opacity:.4;cursor:not-allowed}
+.video-topup-btn{flex:1;padding:11px;background:linear-gradient(135deg,var(--em),var(--em-dark));color:#000;border:none;border-radius:9px;font-family:var(--font-body);font-size:13px;font-weight:600;cursor:pointer;transition:opacity .2s}
+.video-topup-btn:disabled{opacity:.4;cursor:not-allowed}
+.video-confirm-cancel{padding:11px 16px;background:var(--surface2);color:var(--text2);border:1px solid var(--border2);border-radius:9px;font-family:var(--font-body);font-size:13px;cursor:pointer;transition:background .2s}
 .video-confirm-cancel:hover{background:var(--surface3)}
-.credits-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(156,39,176,.15);border:1px solid rgba(156,39,176,.3);border-radius:20px;padding:2px 8px;font-size:11px;color:#ce93d8;font-family:var(--font-mono)}
 </style>
 </head>
 <body>
@@ -482,6 +496,14 @@ window.addEventListener('load', async () => {
     if (sb) await loadUserProfile();
     return;
   }
+  if (params.get('video_topup') === 'success') {
+    showApp();
+    const pack = params.get('pack') || '';
+    showToast('✅ ¡Créditos de video acreditados! Ya podés generar videos.', 'info', 6000);
+    window.history.replaceState({}, '', '/');
+    setTimeout(() => updateDailyCounter(), 2000);
+    return;
+  }
   currentUser ? showApp() : showLogin();
   if (sb) {
     sb.auth.onAuthStateChange(async (event, session) => {
@@ -629,13 +651,14 @@ function updateDailyCounter() {
   const el = document.getElementById('daily-counter');
   if (!el) return;
   if (isPro()) {
-    // Pro: mostrar créditos de video
-    fetch('/api/video/credits', { headers: authToken ? {'Authorization': `Bearer ${authToken}`} : {} })
+    // Pro: mostrar saldo de video en USD
+    fetch('/api/video/balance', { headers: authToken ? {'Authorization': `Bearer ${authToken}`} : {} })
       .then(r => r.ok ? r.json() : null)
       .then(d => {
-        if (!d) return;
-        const cls = d.available === 0 ? 'empty' : d.available <= 2 ? 'low' : '';
-        el.innerHTML = `<div class="daily-badge ${cls}" title="Créditos de video disponibles este mes">🎬 ${d.available} crédito${d.available !== 1 ? 's' : ''} video</div>`;
+        if (!d && d?.balance_usd === undefined) return;
+        const bal = d.balance_usd ?? 0;
+        const cls = bal === 0 ? 'empty' : bal < 1.5 ? 'low' : '';
+        el.innerHTML = `<div class="daily-badge ${cls}" title="Saldo disponible para videos IA" style="cursor:pointer" onclick="showTopupModal()">🎬 $${bal.toFixed(2)} video</div>`;
       })
       .catch(() => { el.innerHTML = ''; });
     return;
@@ -1104,58 +1127,140 @@ function showVideoProgress(typingEl) {
 
 
 // ══════════════════════════════════════════════════════════════
-//  MODAL CONFIRMACIÓN DE VIDEO
+//  MODAL VIDEO IA — Selector de modelo, duración y recarga
 // ══════════════════════════════════════════════════════════════
 let _videoConfirmResolve = null;
+let _selectedVideoOption = null;
+let _selectedPack = null;
+
+const VIDEO_PACKS = [
+  { id: 'pack_5',  price: 5,  label: '~7 videos de 5s' },
+  { id: 'pack_10', price: 10, label: '~14 videos de 5s' },
+  { id: 'pack_20', price: 20, label: '~28 videos de 5s' },
+  { id: 'pack_50', price: 50, label: '~70 videos de 5s' },
+];
 
 function showVideoConfirmModal(confirmData) {
   return new Promise((resolve) => {
     _videoConfirmResolve = resolve;
-    const av = confirmData.credits_available ?? 0;
-    const monthly = confirmData.monthly_allowance ?? 0;
-    const model = confirmData.model_hint ?? 'Wan2.1 720p';
-    const cost = confirmData.estimated_cost_usd ?? 0.80;
+    _selectedPack = null;
+    const balance = confirmData.balance_usd ?? 0;
+    const prices = confirmData.prices ?? [];
+    const canGenerate = confirmData.can_generate ?? false;
+
+    // Seleccionar opción default (más barata que puede pagar)
+    const affordable = prices.filter(p => p.can_afford);
+    _selectedVideoOption = affordable[0] || prices[0] || null;
 
     const overlay = document.createElement('div');
     overlay.className = 'video-confirm-overlay';
     overlay.id = 'video-confirm-overlay';
+
+    const pricesHTML = prices.map(p => `
+      <div class="video-option ${p === _selectedVideoOption ? 'selected' : ''} ${!p.can_afford ? 'disabled-opt' : ''}"
+           onclick="selectVideoOption(this, '${p.model_key}', ${p.duration_s}, ${p.user_price_usd})"
+           data-model="${p.model_key}" data-dur="${p.duration_s}" data-price="${p.user_price_usd}">
+        ${p.model_key === 'kling26pro' ? '<span class="video-option-badge">AUDIO</span>' : ''}
+        <div class="video-option-name">${p.duration_s}s · ${p.model_key === 'kling25pro' ? 'Kling 2.5 Pro' : 'Kling 2.6 Pro'}</div>
+        <div class="video-option-detail">${p.model_key === 'kling25pro' ? '1080p · Sin audio' : '1080p · Audio nativo'}</div>
+        <div class="video-option-price">$${p.user_price_usd.toFixed(2)} USD</div>
+      </div>`).join('');
+
+    const packsHTML = VIDEO_PACKS.map(pk => `
+      <div class="video-pack" onclick="selectVideoPack(this, '${pk.id}')" data-pack="${pk.id}">
+        <div class="video-pack-price">$${pk.price}</div>
+        <div class="video-pack-desc">${pk.label}</div>
+      </div>`).join('');
+
     overlay.innerHTML = `
       <div class="video-confirm-box">
         <div class="video-confirm-title">🎬 Generar video con IA</div>
-        <div class="video-confirm-sub">Esto usará 1 crédito de video de tu Plan Pro. El proceso puede tardar entre 2 y 5 minutos.</div>
-        <div class="video-confirm-info">
-          <div class="video-confirm-info-row">
-            <span class="video-confirm-info-label">Modelo</span>
-            <span class="video-confirm-info-val">${model}</span>
-          </div>
-          <div class="video-confirm-info-row">
-            <span class="video-confirm-info-label">Costo Replicate</span>
-            <span class="video-confirm-info-val">~$${cost.toFixed(2)} USD</span>
-          </div>
-          <div class="video-confirm-info-row">
-            <span class="video-confirm-info-label">Créditos disponibles</span>
-            <span class="video-confirm-info-val" style="color:${av===0?'var(--coral)':av<=2?'var(--amber)':'var(--em)'}">
-              ${av} / ${monthly} este mes
-            </span>
-          </div>
-        </div>
-        ${av === 0 ? `<div style="background:rgba(216,90,48,0.1);border:1px solid rgba(216,90,48,0.3);border-radius:8px;padding:10px;font-size:12px;color:var(--coral);margin-bottom:12px;">
-          Sin créditos disponibles. Esperá al mes próximo o comprá un pack extra.
+        <div class="video-confirm-sub">Motor: <strong>FAL.ai · Kling</strong> · Calidad cinematográfica 1080p · 2-5 minutos de procesamiento</div>
+
+        <div class="video-balance-badge">💰 Saldo: $${balance.toFixed(2)} USD</div>
+
+        <div style="font-size:11px;font-weight:600;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px;">Elegí modelo y duración</div>
+        <div class="video-options-grid">${pricesHTML}</div>
+
+        ${!canGenerate ? `<div class="video-insufficient">
+          Saldo insuficiente para generar. Cargá créditos para continuar.
         </div>` : ''}
+
         <div class="video-confirm-btns">
-          <button class="video-confirm-cancel" onclick="closeVideoConfirm(false)">Cancelar</button>
-          <button class="video-confirm-ok" ${av===0?'disabled':''} onclick="closeVideoConfirm(true)">
-            ${av > 0 ? '🎬 Confirmar y generar' : '❌ Sin créditos'}
+          <button class="video-confirm-cancel" onclick="closeVideoConfirm(null)">Cancelar</button>
+          <button class="video-confirm-ok" id="video-gen-btn" ${!canGenerate || !_selectedVideoOption ? 'disabled' : ''}
+                  onclick="closeVideoConfirm('generate')">
+            🎬 Generar
           </button>
+        </div>
+
+        <div class="video-topup-section">
+          <div class="video-topup-title">💳 Cargar créditos de video</div>
+          <div class="video-packs-grid">${packsHTML}</div>
+          <div class="video-confirm-btns">
+            <button class="video-topup-btn" id="video-topup-btn" disabled
+                    onclick="closeVideoConfirm('topup')">
+              Cargar créditos con MercadoPago
+            </button>
+          </div>
         </div>
       </div>`;
     document.body.appendChild(overlay);
   });
 }
 
-function closeVideoConfirm(confirmed) {
+function selectVideoOption(el, modelKey, durationS, priceUsd) {
+  document.querySelectorAll('.video-option').forEach(e => e.classList.remove('selected'));
+  el.classList.add('selected');
+  _selectedVideoOption = { model_key: modelKey, duration_s: durationS, user_price_usd: priceUsd };
+  // Actualizar botón generar
+  const btn = document.getElementById('video-gen-btn');
+  if (btn) btn.disabled = priceUsd > (parseFloat(document.querySelector('.video-balance-badge')?.textContent?.replace(/[^0-9.]/g,'') || '0'));
+}
+
+function selectVideoPack(el, packId) {
+  document.querySelectorAll('.video-pack').forEach(e => e.classList.remove('selected-pack'));
+  el.classList.add('selected-pack');
+  _selectedPack = packId;
+  const topupBtn = document.getElementById('video-topup-btn');
+  if (topupBtn) topupBtn.disabled = false;
+}
+
+function closeVideoConfirm(action) {
   document.getElementById('video-confirm-overlay')?.remove();
-  if (_videoConfirmResolve) { _videoConfirmResolve(confirmed); _videoConfirmResolve = null; }
+  if (_videoConfirmResolve) {
+    if (action === 'generate') {
+      _videoConfirmResolve({ action: 'generate', option: _selectedVideoOption });
+    } else if (action === 'topup') {
+      _videoConfirmResolve({ action: 'topup', pack_id: _selectedPack });
+    } else {
+      _videoConfirmResolve(null);
+    }
+    _videoConfirmResolve = null;
+  }
+}
+
+
+function showTopupModal() {
+  if (!_userIsPro || !authToken) { showToast('Iniciá sesión con Plan Pro para cargar créditos de video.', 'warn'); return; }
+  fetch('/api/video/confirm', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','Authorization':`Bearer ${authToken}`},
+    body: JSON.stringify({prompt:''})
+  }).then(r=>r.ok?r.json():null).then(async d => {
+    if (!d) return;
+    const result = await showVideoConfirmModal(d);
+    if (result?.action === 'topup' && result.pack_id) {
+      const topupRes = await fetch('/api/video/topup', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':`Bearer ${authToken}`},
+        body:JSON.stringify({pack_id:result.pack_id,user_id:userProfile?.id||'',user_email:currentUser?.email||''})
+      });
+      const td = topupRes.ok ? await topupRes.json() : null;
+      if (td?.checkout_url) { window.open(td.checkout_url,'_blank'); showToast('💳 Abriendo MercadoPago...','info',4000); }
+    }
+    updateDailyCounter();
+  });
 }
 
 async function send(){
@@ -1169,6 +1274,8 @@ async function send(){
   const _userIsPro = !!(userProfile?.is_pro || userProfile?.plan === 'pro');
 
   // ── MODAL DE CONFIRMACIÓN PARA VIDEOS ──
+  let _videoModel = 'kling25pro';
+  let _videoDuration = 5;
   if (isVideoPrompt(prompt) && _userIsPro) {
     try {
       const confirmRes = await fetch('/api/video/confirm', {
@@ -1178,11 +1285,37 @@ async function send(){
       });
       const confirmData = confirmRes.ok ? await confirmRes.json() : null;
       if (confirmData) {
-        const confirmed = await showVideoConfirmModal(confirmData);
-        if (!confirmed) {
-          // Usuario canceló — restaurar UI
+        const result = await showVideoConfirmModal(confirmData);
+        if (!result) {
           document.getElementById('send-btn').disabled = false;
+          loading = false;
           return;
+        }
+        if (result.action === 'topup' && result.pack_id) {
+          // Usuario quiere recargar — ir a MercadoPago
+          document.getElementById('send-btn').disabled = false;
+          loading = false;
+          try {
+            const topupRes = await fetch('/api/video/topup', {
+              method: 'POST',
+              headers: {'Content-Type':'application/json', ...(authToken ? {'Authorization':`Bearer ${authToken}`} : {})},
+              body: JSON.stringify({
+                pack_id: result.pack_id,
+                user_id: userProfile?.id || '',
+                user_email: currentUser?.email || ''
+              })
+            });
+            const topupData = topupRes.ok ? await topupRes.json() : null;
+            if (topupData?.checkout_url) {
+              window.open(topupData.checkout_url, '_blank');
+              showToast('💳 Redirigiendo a MercadoPago para cargar créditos de video...', 'info', 5000);
+            }
+          } catch(e) { showToast('Error al generar link de pago', 'error'); }
+          return;
+        }
+        if (result.action === 'generate' && result.option) {
+          _videoModel = result.option.model_key;
+          _videoDuration = result.option.duration_s;
         }
       }
     } catch(e) { console.warn('Video confirm check failed:', e); }
@@ -1245,11 +1378,13 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
           history:activeHistory,
           mode,
           username:userProfile?.name||'',
-          tts_enabled:!!(userProfile?.plan==='pro'||userProfile?.is_pro), // Pro siempre genera audio
+          tts_enabled:!!(userProfile?.plan==='pro'||userProfile?.is_pro),
           conversation_id:convId||'',
           user_plan: userProfile?.plan||'free',
           user_id: userProfile?.id||currentUser?.id||'',
-          auth_id: currentUser?.id||''
+          auth_id: currentUser?.id||'',
+          video_model: _videoModel,
+          video_duration: _videoDuration,
         })
       });
       data=await res.json(); if(!res.ok) throw new Error(data.detail||'Error');
