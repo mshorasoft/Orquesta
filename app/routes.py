@@ -864,12 +864,14 @@ async def get_video_credits(user: dict) -> dict:
     )
 
     try:
-        result = supabase.table("video_balance")             .select("balance_usd")             .eq("user_id", user["id"])             .single()             .execute()
+        # maybeSingle() no lanza error si no hay filas (a diferencia de single())
+        result = supabase.table("video_balance")             .select("balance_usd")             .eq("user_id", user["id"])             .maybe_single()             .execute()
         balance = round(float(result.data.get("balance_usd", 0.0)), 4) if result.data else 0.0
-        print(f"✅ video_balance: ${balance:.2f} USD")
+        print(f"✅ video_balance: ${balance:.4f} USD")
         return {"balance_usd": balance, "is_pro": is_pro}
     except Exception as e:
-        print(f"video_balance lookup (ok if first use): {e}")
+        print(f"video_balance lookup error: {e}")
+        # Si falla, devolver 0 sin tirar excepción
         return {"balance_usd": 0.0, "is_pro": is_pro}
 
 
@@ -2648,23 +2650,59 @@ async def verify_video_payment(data: dict, authorization: str = Header(None)):
 
 @router.get("/video/balance")
 async def get_video_balance(authorization: str = Header(None)):
-    """Retorna el saldo de video del usuario en USD."""
-    user = await get_optional_user(authorization)
-    if not user:
-        return {"balance_usd": 0.0, "is_pro": False, "prices": list(VIDEO_PRICES.keys())}
-    credits = await get_video_credits(user)
-
-    # También devolver tabla de precios
+    """Retorna el saldo de video del usuario en USD. Nunca lanza error."""
     prices_table = [
         {
             "model_key": mk,
             "duration_s": dur,
             "label": info["label"],
             "user_price_usd": info["user_price"],
+            "can_afford": False,  # se actualiza abajo
         }
         for (mk, dur), info in VIDEO_PRICES.items()
     ]
-    return {**credits, "prices": sorted(prices_table, key=lambda x: x["user_price_usd"])}
+    prices_table.sort(key=lambda x: x["user_price_usd"])
+
+    try:
+        user = await get_optional_user(authorization)
+
+        # Fallback JWT si get_optional_user falló
+        if not user and authorization and authorization.startswith("Bearer ") and supabase:
+            try:
+                token = authorization.replace("Bearer ", "").strip()
+                parts = token.split(".")
+                if len(parts) == 3:
+                    pad = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                    jwt_p = json.loads(base64.urlsafe_b64decode(pad))
+                    auth_id = jwt_p.get("sub", "")
+                    if auth_id:
+                        async with httpx.AsyncClient(timeout=8) as hx:
+                            r = await hx.get(
+                                f"{SUPABASE_URL}/rest/v1/users?auth_id=eq.{auth_id}&select=*&limit=1",
+                                headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"}
+                            )
+                            if r.is_success and r.json():
+                                user = r.json()[0]
+            except Exception as je:
+                print(f"video/balance JWT fallback: {je}")
+
+        if not user:
+            return {"balance_usd": 0.0, "is_pro": False, "prices": prices_table}
+
+        credits = await get_video_credits(user)
+        balance = credits.get("balance_usd", 0.0)
+        is_pro = credits.get("is_pro", False)
+
+        # Marcar cuáles puede pagar
+        for p in prices_table:
+            p["can_afford"] = balance >= p["user_price_usd"]
+
+        return {"balance_usd": balance, "is_pro": is_pro, "prices": prices_table}
+
+    except Exception as e:
+        print(f"video/balance endpoint error: {e}")
+        # Nunca devolver 500 — el frontend muestra error rojo si falla
+        return {"balance_usd": 0.0, "is_pro": False, "prices": prices_table}
 
 @router.get("/video/credits")
 async def get_my_video_credits(authorization: str = Header(None)):
