@@ -498,10 +498,28 @@ window.addEventListener('load', async () => {
   }
   if (params.get('video_topup') === 'success') {
     showApp();
-    const pack = params.get('pack') || '';
-    showToast('✅ ¡Créditos de video acreditados! Ya podés generar videos.', 'info', 6000);
     window.history.replaceState({}, '', '/');
-    setTimeout(() => updateDailyCounter(), 2000);
+    showToast('⏳ Verificando tu pago con MercadoPago...', 'info', 4000);
+    // Esperar 2s para que MP procese, luego verificar
+    setTimeout(async () => {
+      try {
+        const headers = authToken ? {'Content-Type':'application/json','Authorization':`Bearer ${authToken}`} : {'Content-Type':'application/json'};
+        const res = await fetch('/api/video/verify-payment', {
+          method: 'POST', headers,
+          body: JSON.stringify({ pack_id: params.get('pack') || '' })
+        });
+        const data = res.ok ? await res.json() : null;
+        if (data?.credited) {
+          showToast(`✅ ¡$${data.amount_credited?.toFixed(2) || ''} USD acreditados! Ya podés generar videos.`, 'info', 7000);
+        } else {
+          showToast(`💰 Saldo: $${data?.balance_usd?.toFixed(2) || '0.00'} USD. Si no se actualizó, esperá unos segundos.`, 'info', 6000);
+        }
+        updateDailyCounter();
+      } catch(e) {
+        showToast('El pago fue procesado. Tu saldo se actualizará en breve.', 'info', 5000);
+        updateDailyCounter();
+      }
+    }, 2500);
     return;
   }
   currentUser ? showApp() : showLogin();
@@ -1148,54 +1166,51 @@ function showVideoConfirmModal(confirmData) {
     const balance = confirmData.balance_usd ?? 0;
     const canGenerate = confirmData.can_generate ?? false;
 
-    // Siempre mostrar todos los precios (hardcoded como fallback si el backend no los manda)
     const prices = (confirmData.prices && confirmData.prices.length > 0)
       ? confirmData.prices
       : [
-          { model_key:'kling25pro', duration_s:5,  user_price_usd:0.70, label:'Kling 2.5 Pro · 5s · 1080p',  can_afford: balance>=0.70 },
-          { model_key:'kling25pro', duration_s:10, user_price_usd:1.40, label:'Kling 2.5 Pro · 10s · 1080p', can_afford: balance>=1.40 },
-          { model_key:'kling26pro', duration_s:5,  user_price_usd:1.40, label:'Kling 2.6 Pro · 5s · Audio',  can_afford: balance>=1.40 },
-          { model_key:'kling26pro', duration_s:10, user_price_usd:2.80, label:'Kling 2.6 Pro · 10s · Audio', can_afford: balance>=2.80 },
+          { model_key:'kling25pro', duration_s:5,  user_price_usd:0.70, can_afford: balance>=0.70 },
+          { model_key:'kling25pro', duration_s:10, user_price_usd:1.40, can_afford: balance>=1.40 },
+          { model_key:'kling26pro', duration_s:5,  user_price_usd:1.40, can_afford: balance>=1.40 },
+          { model_key:'kling26pro', duration_s:10, user_price_usd:2.80, can_afford: balance>=2.80 },
         ];
 
-    // Seleccionar default: la más barata que puede pagar, o la primera
     const affordable = prices.filter(p => p.can_afford);
     _selectedVideoOption = affordable[0] || prices[0] || null;
 
-    // Construir el overlay fuera del innerHTML para poder agregar eventos reales
+    // ── Crear todos los elementos con createElement (sin innerHTML para botones) ──
     const overlay = document.createElement('div');
     overlay.className = 'video-confirm-overlay';
     overlay.id = 'video-confirm-overlay';
 
     const box = document.createElement('div');
     box.className = 'video-confirm-box';
-    box.innerHTML = `
-      <div class="video-confirm-title">🎬 Generar video con IA</div>
-      <div class="video-confirm-sub">Motor: <strong>FAL.ai · Kling</strong> · Calidad cinematográfica 1080p · 2-5 min</div>
-      <div class="video-balance-badge" id="vbal-badge">💰 Saldo: $${balance.toFixed(2)} USD</div>
-      <div style="font-size:11px;font-weight:600;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px;">Elegí modelo y duración</div>
-      <div class="video-options-grid" id="vopts-grid"></div>
-      <div id="vinsuf-msg" style="display:${canGenerate?'none':'block'}" class="video-insufficient">
-        Saldo insuficiente. Cargá créditos abajo para generar.
-      </div>
-      <div class="video-confirm-btns">
-        <button class="video-confirm-cancel" id="vbtn-cancel">Cancelar</button>
-        <button class="video-confirm-ok" id="vbtn-gen" ${(!canGenerate||!_selectedVideoOption)?'disabled':''}>🎬 Generar</button>
-      </div>
-      <div class="video-topup-section">
-        <div class="video-topup-title">💳 Cargar créditos de video</div>
-        <div class="video-packs-grid" id="vpacks-grid"></div>
-        <button class="video-topup-btn" id="vbtn-topup" disabled>Cargar créditos con MercadoPago</button>
-      </div>`;
 
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
+    // Header
+    const title = document.createElement('div');
+    title.className = 'video-confirm-title';
+    title.innerHTML = '🎬 Generar video con IA';
 
-    // Renderizar opciones de modelo/duración
-    const optsGrid = document.getElementById('vopts-grid');
+    const sub = document.createElement('div');
+    sub.className = 'video-confirm-sub';
+    sub.innerHTML = 'Motor: <strong>FAL.ai · Kling</strong> · Calidad 1080p · 2-5 min';
+
+    const balBadge = document.createElement('div');
+    balBadge.className = 'video-balance-badge';
+    balBadge.id = 'vbal-badge';
+    balBadge.textContent = `💰 Saldo: $${balance.toFixed(2)} USD`;
+
+    // Opciones de modelo
+    const optsLabel = document.createElement('div');
+    optsLabel.style.cssText = 'font-size:11px;font-weight:600;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px;';
+    optsLabel.textContent = 'Elegí modelo y duración';
+
+    const optsGrid = document.createElement('div');
+    optsGrid.className = 'video-options-grid';
+
     prices.forEach((p, i) => {
       const opt = document.createElement('div');
-      opt.className = 'video-option' + (i === 0 ? ' selected' : '') + (!p.can_afford ? ' disabled-opt' : '');
+      opt.className = 'video-option' + (i === 0 ? ' selected' : '');
       opt.style.opacity = p.can_afford ? '1' : '0.5';
       opt.innerHTML = `
         ${p.model_key==='kling26pro'?'<span class="video-option-badge">AUDIO</span>':''}
@@ -1203,42 +1218,75 @@ function showVideoConfirmModal(confirmData) {
         <div class="video-option-detail">${p.model_key==='kling25pro'?'1080p · Sin audio':'1080p · Audio nativo'}</div>
         <div class="video-option-price">$${p.user_price_usd.toFixed(2)} USD</div>`;
       opt.addEventListener('click', () => {
-        document.querySelectorAll('.video-option').forEach(e => e.classList.remove('selected'));
+        optsGrid.querySelectorAll('.video-option').forEach(e => e.classList.remove('selected'));
         opt.classList.add('selected');
         _selectedVideoOption = { model_key: p.model_key, duration_s: p.duration_s, user_price_usd: p.user_price_usd };
-        const genBtn = document.getElementById('vbtn-gen');
-        if (genBtn) genBtn.disabled = !p.can_afford;
+        genBtn.disabled = !p.can_afford;
       });
       optsGrid.appendChild(opt);
     });
 
-    // Renderizar packs de recarga
-    const packsGrid = document.getElementById('vpacks-grid');
+    // Mensaje saldo insuficiente
+    const insufMsg = document.createElement('div');
+    insufMsg.className = 'video-insufficient';
+    insufMsg.textContent = 'Saldo insuficiente. Cargá créditos abajo para generar.';
+    insufMsg.style.display = canGenerate ? 'none' : 'block';
+
+    // Botones generar / cancelar
+    const btnsRow = document.createElement('div');
+    btnsRow.className = 'video-confirm-btns';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'video-confirm-cancel';
+    cancelBtn.textContent = 'Cancelar';
+    cancelBtn.addEventListener('click', () => closeVideoConfirm(null));
+
+    const genBtn = document.createElement('button');
+    genBtn.className = 'video-confirm-ok';
+    genBtn.innerHTML = '🎬 Generar';
+    genBtn.disabled = !canGenerate || !_selectedVideoOption;
+    genBtn.addEventListener('click', () => {
+      if (_selectedVideoOption && !genBtn.disabled) closeVideoConfirm('generate');
+    });
+
+    btnsRow.appendChild(cancelBtn);
+    btnsRow.appendChild(genBtn);
+
+    // Sección recarga
+    const topupSection = document.createElement('div');
+    topupSection.className = 'video-topup-section';
+
+    const topupTitle = document.createElement('div');
+    topupTitle.className = 'video-topup-title';
+    topupTitle.textContent = '💳 Cargar créditos de video';
+
+    const packsGrid = document.createElement('div');
+    packsGrid.className = 'video-packs-grid';
+
     VIDEO_PACKS.forEach(pk => {
       const pkEl = document.createElement('div');
       pkEl.className = 'video-pack';
       pkEl.innerHTML = `<div class="video-pack-price">$${pk.price}</div><div class="video-pack-desc">${pk.label}</div>`;
       pkEl.addEventListener('click', () => {
-        document.querySelectorAll('.video-pack').forEach(e => e.classList.remove('selected-pack'));
+        packsGrid.querySelectorAll('.video-pack').forEach(e => e.classList.remove('selected-pack'));
         pkEl.classList.add('selected-pack');
         _selectedPack = pk.id;
-        const tb = document.getElementById('vbtn-topup');
-        if (tb) { tb.disabled = false; tb.textContent = `Cargar $${pk.price} USD con MercadoPago`; }
+        topupBtn.disabled = false;
+        topupBtn.textContent = `Cargar $${pk.price} USD con MercadoPago`;
       });
       packsGrid.appendChild(pkEl);
     });
 
-    // Botones con addEventListener real (no onclick en innerHTML)
-    document.getElementById('vbtn-cancel').addEventListener('click', () => closeVideoConfirm(null));
-    document.getElementById('vbtn-gen').addEventListener('click', () => {
-      if (_selectedVideoOption) closeVideoConfirm('generate');
-    });
-    document.getElementById('vbtn-topup').addEventListener('click', async () => {
+    const topupBtn = document.createElement('button');
+    topupBtn.className = 'video-topup-btn';
+    topupBtn.textContent = 'Cargar créditos con MercadoPago';
+    topupBtn.disabled = true;
+    topupBtn.addEventListener('click', async () => {
       if (!_selectedPack) return;
-      const tb = document.getElementById('vbtn-topup');
-      if (tb) { tb.disabled = true; tb.textContent = '⏳ Redirigiendo a MercadoPago...'; }
+      topupBtn.disabled = true;
+      topupBtn.textContent = '⏳ Generando link...';
       try {
-        const topupRes = await fetch('/api/video/topup', {
+        const res = await fetch('/api/video/topup', {
           method: 'POST',
           headers: {'Content-Type':'application/json', ...(authToken ? {'Authorization':`Bearer ${authToken}`}:{})},
           body: JSON.stringify({
@@ -1247,20 +1295,50 @@ function showVideoConfirmModal(confirmData) {
             user_email: currentUser?.email || ''
           })
         });
-        const td = topupRes.ok ? await topupRes.json() : null;
-        if (td?.checkout_url) {
-          window.open(td.checkout_url, '_blank');
-          showToast('💳 Se abrió MercadoPago en nueva pestaña para cargar créditos.', 'info', 6000);
+        const data = res.ok ? await res.json() : null;
+        if (data?.checkout_url) {
+          window.open(data.checkout_url, '_blank');
+          showToast('💳 MercadoPago abierto en nueva pestaña. Volvé aquí después de pagar.', 'info', 8000);
           closeVideoConfirm(null);
         } else {
-          showToast('❌ Error al generar el link de pago. Intentá de nuevo.', 'error');
-          if (tb) { tb.disabled = false; tb.textContent = 'Cargar créditos con MercadoPago'; }
+          const err = data?.detail || 'Error al generar el link';
+          showToast(`❌ ${err}`, 'error');
+          topupBtn.disabled = false;
+          topupBtn.textContent = 'Cargar créditos con MercadoPago';
         }
       } catch(e) {
-        showToast('❌ Error de conexión: ' + e.message, 'error');
-        if (tb) { tb.disabled = false; tb.textContent = 'Cargar créditos con MercadoPago'; }
+        showToast(`❌ Error: ${e.message}`, 'error');
+        topupBtn.disabled = false;
+        topupBtn.textContent = 'Cargar créditos con MercadoPago';
       }
     });
+
+    topupSection.appendChild(topupTitle);
+    topupSection.appendChild(packsGrid);
+    topupSection.appendChild(topupBtn);
+
+    // Armar el box
+    box.appendChild(title);
+    box.appendChild(sub);
+    box.appendChild(balBadge);
+    box.appendChild(optsLabel);
+    box.appendChild(optsGrid);
+    box.appendChild(insufMsg);
+    box.appendChild(btnsRow);
+    box.appendChild(topupSection);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    // Cerrar al hacer clic fuera del box
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeVideoConfirm(null);
+    });
+
+    // Cerrar con Escape
+    const escHandler = (e) => {
+      if (e.key === 'Escape') { closeVideoConfirm(null); document.removeEventListener('keydown', escHandler); }
+    };
+    document.addEventListener('keydown', escHandler);
   });
 }
 
