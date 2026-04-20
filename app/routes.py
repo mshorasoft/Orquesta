@@ -63,10 +63,19 @@ MP_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
 FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "20"))
 
 # ── CRÉDITOS DE VIDEO ─────────────────────────────────────────────────────────
-# Pro mensual/anual recibe N créditos gratis al mes. Extra se pueden comprar.
-VIDEO_CREDITS_PRO_MONTHLY = int(os.getenv("VIDEO_CREDITS_PRO_MONTHLY", "5"))
-VIDEO_CREDITS_PRO_ANNUAL  = int(os.getenv("VIDEO_CREDITS_PRO_ANNUAL",  "10"))
-VIDEO_CREDITS_FREE        = int(os.getenv("VIDEO_CREDITS_FREE", "0"))  # Free: 0 créditos de video
+VIDEO_CREDITS_FREE = 0  # Plan free: sin videos
+
+# ── PRECIOS DE VIDEO (FAL.ai → precio a usuario) ─────────────────────────────
+# Costo real FAL.ai x 2 = precio al usuario (100% de margen)
+VIDEO_PRICES = {
+    # (modelo, duracion_s): {"fal_cost": X, "user_price": X*2, "label": "..."}
+    ("kling25pro", 5):  {"fal_cost": 0.35, "user_price": 0.70,  "label": "Kling 2.5 Pro · 5s · 1080p"},
+    ("kling25pro", 10): {"fal_cost": 0.70, "user_price": 1.40,  "label": "Kling 2.5 Pro · 10s · 1080p"},
+    ("kling26pro", 5):  {"fal_cost": 0.70, "user_price": 1.40,  "label": "Kling 2.6 Pro · 5s · Audio nativo"},
+    ("kling26pro", 10): {"fal_cost": 1.40, "user_price": 2.80,  "label": "Kling 2.6 Pro · 10s · Audio nativo"},
+}
+VIDEO_DEFAULT_MODEL   = "kling25pro"
+VIDEO_DEFAULT_DURATION = 5
 
 # ── RATE LIMITING por IP ──────────────────────────────────────────────────────
 from collections import defaultdict
@@ -893,348 +902,215 @@ async def get_video_credits(user: dict) -> dict:
     }
 
 
-async def consume_video_credit(user: dict, model_used: str, prompt_preview: str) -> bool:
+async def consume_video_credit(user: dict, model_key: str, duration_s: int, prompt_preview: str) -> bool:
     """
-    Registra 1 uso de crédito de video.
-    Si la tabla no existe aún, igual retorna True (no bloquea al Pro).
+    Descuenta el costo del video en USD del saldo del usuario.
+    Registra el uso en video_usage para historial.
     """
     if not user or not supabase:
-        return True  # sin supabase, no bloquear
+        return True
+
+    price_info = VIDEO_PRICES.get((model_key, duration_s), VIDEO_PRICES[("kling25pro", 5)])
+    cost = price_info["fal_cost"]  # costo real que pagamos a FAL
+    user_price = price_info["user_price"]  # lo que pagó el usuario
 
     try:
-        supabase.table("video_credits").insert({
+        # Descontar del saldo — usar RPC para atomicidad
+        supabase.rpc("deduct_video_balance", {
+            "p_user_id": user["id"],
+            "p_amount": user_price
+        }).execute()
+        print(f"✅ Video balance deducido: ${user_price:.2f} de {user['id'][:8]}")
+    except Exception as e:
+        print(f"deduct_video_balance error: {e}")
+        # Intentar update directo como fallback
+        try:
+            current = supabase.table("video_balance").select("balance_usd").eq("user_id", user["id"]).single().execute()
+            new_bal = round(max(0, float(current.data.get("balance_usd", 0)) - user_price), 4)
+            supabase.table("video_balance").update({"balance_usd": new_bal}).eq("user_id", user["id"]).execute()
+        except Exception as e2:
+            print(f"video_balance update fallback error: {e2}")
+
+    # Registrar en historial
+    try:
+        supabase.table("video_usage").insert({
             "user_id": user["id"],
-            "model_used": model_used,
+            "model_key": model_key,
+            "duration_s": duration_s,
+            "fal_cost_usd": cost,
+            "user_price_usd": user_price,
             "prompt_preview": prompt_preview[:100],
             "created_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
-        print(f"✅ Crédito de video consumido: {user['id'][:8]} · {model_used}")
-        return True
     except Exception as e:
-        print(f"consume_video_credit (tabla no lista aún, ok): {e}")
-        return True  # tabla no existe → igual permitir
+        print(f"video_usage insert error (ok): {e}")
+
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  VIDEO GENERATION  — cascada: Motor propio → Replicate → FAL.ai → ModelsLab → descripción
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def generate_video_smart(prompt: str, history=None, mode="general", username="", user: dict = None) -> tuple[str, str, str]:
-    import urllib.parse
+async def generate_video_smart(
+    prompt: str,
+    history=None,
+    mode: str = "general",
+    username: str = "",
+    user: dict = None,
+    model_key: str = "kling25pro",
+    duration_s: int = 5,
+) -> tuple[str, str, str]:
+    """
+    Genera video usando FAL.ai — Kling 2.5 Turbo Pro (sin audio) o
+    Kling 2.6 Pro (con audio nativo). Descuenta saldo del usuario.
+    """
+    FAL_KEY = os.getenv("FAL_API_KEY", "")
 
-    VIDEOGEN_URL  = os.getenv("VIDEOGEN_URL", "").rstrip("/")
-    VIDEOGEN_KEY  = os.getenv("VIDEOGEN_API_KEY", "")
-    MODELSLAB_KEY = os.getenv("MODELSLAB_API_KEY", "")
-    REPLICATE_KEY = os.getenv("REPLICATE_API_KEY", "")
-    FAL_KEY       = os.getenv("FAL_API_KEY", "")
+    # Endpoints FAL.ai por modelo
+    FAL_ENDPOINTS = {
+        "kling25pro": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+        "kling26pro": "fal-ai/kling-video/v2.6/pro/text-to-video",
+    }
+    endpoint = FAL_ENDPOINTS.get(model_key, FAL_ENDPOINTS["kling25pro"])
+    price_info = VIDEO_PRICES.get((model_key, duration_s), VIDEO_PRICES[("kling25pro", 5)])
 
-    async def enhance(p):
+    # ── Mejorar el prompt ──────────────────────────────────────────────────────
+    async def enhance(p: str) -> str:
         try:
             msgs = [
-                {"role":"system","content":"""You are a world-class AI video prompt engineer specialized in Wan2.1, LTX-Video and Minimax video models.
-Transform the user request into a hyper-detailed, cinematic video prompt in English.
+                {"role": "system", "content": """You are an elite AI video director and prompt engineer.
+Transform the user's request into a hyper-detailed, cinematic English prompt for Kling AI video models.
 
-RULES:
-1. Always describe REAL, PHOTOREALISTIC scenes — never cartoons or animations unless explicitly requested
-2. Include: exact camera movement (slow dolly, aerial crane shot, handheld tracking), lens type (anamorphic 35mm), lighting (golden hour, stadium floodlights, volumetric rays), texture details, actor/character behavior
-3. For sports/stadium scenes: packed crowd reacting, real grass texture, jersey details, ball physics, broadcast-style angles
-4. For fantasy/creative requests: still photorealistic lighting and physics, only the subject is fantastical
-5. End with: ", 4K HDR, cinematic color grading, ultra-sharp, professional cinematography, 24fps"
-6. CRITICAL: Wan2.1 responds best to long, extremely specific English prompts (150-200 words)
-7. NEVER use words like: cartoon, animated, 3D render, CGI, illustration — unless user explicitly asks for it
-8. Max 250 words. Reply ONLY with the enhanced prompt, no explanations."""},
-                {"role":"user","content":f"Video request: {p}"}
+STRICT RULES:
+1. PHOTOREALISTIC only — NEVER cartoon, CGI, animated, illustrated (unless user explicitly asks)
+2. Kling excels at: fluid motion, realistic physics, cinematic camera work, sports, action, nature
+3. Include ALL: camera movement (dolly, crane, tracking, handheld), lens (35mm anamorphic),
+   lighting (natural, volumetric, cinematic), textures (skin, fabric, grass), subject behavior
+4. Sports scenes: packed stadium crowd, worn jersey textures, ball spin physics, turf detail,
+   broadcast-style camera with slow-motion replays
+5. Fantasy/creative: keep lighting and physics photorealistic, only subject is fantastical
+6. End with: "Photorealistic, 4K HDR, ultra-sharp, cinematic color grade, 24fps film grain"
+7. Kling responds BEST to 150-200 word English prompts — be extremely specific
+8. Output ONLY the enhanced prompt. No explanations, no quotes, no preamble."""},
+                {"role": "user", "content": f"Video request: {p}"},
             ]
             enhanced, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
-            return enhanced.strip()[:500]
-        except:
+            return enhanced.strip()[:600]
+        except Exception:
             return p
 
-    async def replicate_poll(pred_id: str, model_name: str) -> str | None:
-        """Polling genérico para predictions de Replicate. Retorna video_url o None."""
-        max_attempts = 36 if "720p" in model_name else 24  # 720p: 6min, resto: 4min
-        async with httpx.AsyncClient(timeout=400) as c:
-            for attempt in range(max_attempts):  # 720p hasta 6 min, 480p hasta 4 min
-                await asyncio.sleep(10)
-                r = await c.get(
-                    f"https://api.replicate.com/v1/predictions/{pred_id}",
-                    headers={"Authorization": f"Token {REPLICATE_KEY}"}
-                )
-                d = r.json()
-                status = d.get("status")
-                print(f"🎬 Replicate {model_name} polling {attempt+1}/24: {status}")
-                if status == "succeeded":
-                    output = d.get("output")
-                    return output[0] if isinstance(output, list) else output
-                elif status in ("failed", "canceled"):
-                    print(f"🎬 Replicate {model_name} failed: {d.get('error','')}")
-                    return None
-        return None  # timeout
-
     enhanced = await enhance(prompt)
-    errors = {}
-    print(f"🎬 Video request — prompt mejorado: {enhanced[:80]}")
+    print(f"🎬 FAL.ai video: model={model_key} dur={duration_s}s endpoint={endpoint}")
+    print(f"🎬 Prompt mejorado: {enhanced[:120]}...")
 
-    # ── 1. Motor propio (si está configurado) ──────────────────────────────────
-    if VIDEOGEN_URL and VIDEOGEN_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=300) as c:
-                r = await c.post(
-                    f"{VIDEOGEN_URL}/generate",
-                    headers={"x-api-key": VIDEOGEN_KEY, "Content-Type": "application/json"},
-                    json={"prompt": enhanced, "num_frames": 80, "num_steps": 25, "fps": 8}
-                )
-                if r.status_code == 200:
-                    rd = r.json()
-                    if rd.get("success"):
-                        return f"{VIDEOGEN_URL}{rd.get('download_url','')}", f"🎬 Video generado ({rd.get('duration_s','?')}s).", "orquesta · videogen"
-                    errors["videogen"] = rd.get("error", "Error")[:80]
-                else:
-                    errors["videogen"] = f"HTTP {r.status_code}"
-        except Exception as e:
-            errors["videogen"] = str(e)[:80]
+    if not FAL_KEY:
+        return "", "❌ FAL_API_KEY no configurada en Railway. Contactá al administrador.", "error"
 
-    # ── 2. Replicate — cascada: Wan 2.1 → Minimax → LTX Video ─────────────────
-    if REPLICATE_KEY:
-        replicate_models = [
-            {
-                "name": "wan-2.1-720p",
-                "url": "https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-720p/predictions",
-                "input": {
-                    "prompt": enhanced,
-                    "negative_prompt": "cartoon, animated, 3D render, CGI, illustration, low quality, blurry, distorted, watermark, text, deformed, ugly, bad anatomy, worst quality",
-                    "num_frames": 81,
-                    "sample_steps": 30,
-                    "sample_guide_scale": 7.5,
-                    "fast_mode": "Off",
-                },
-            },
-            {
-                "name": "wan-2.1-480p",
-                "url": "https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-480p/predictions",
-                "input": {
-                    "prompt": enhanced,
-                    "negative_prompt": "cartoon, animated, 3D render, CGI, illustration, low quality, blurry, distorted, watermark, text, deformed",
-                    "num_frames": 81,
-                    "sample_steps": 25,
-                    "sample_guide_scale": 7.0,
-                    "fast_mode": "Balanced",
-                },
-            },
-            {
-                "name": "minimax-video-01",
-                "url": "https://api.replicate.com/v1/models/minimax/video-01/predictions",
-                "input": {
-                    "prompt": enhanced,
-                    "prompt_optimizer": True,
-                },
-            },
-            {
-                "name": "minimax-video-01-live",
-                "url": "https://api.replicate.com/v1/models/minimax/video-01-live/predictions",
-                "input": {
-                    "prompt": enhanced,
-                    "prompt_optimizer": True,
-                },
-            },
-            {
-                "name": "ltx-video",
-                "url": "https://api.replicate.com/v1/predictions",
-                "version": "8c15b830f14b8e4aea31c3e3ac5a03ea13ae3aaf446a1f1f0b9e07ba21baa9b2",
-                "input": {
-                    "prompt": enhanced,
-                    "negative_prompt": "cartoon, animated, 3D render, CGI, illustration, low quality, blurry, distorted, watermark, text, deformed, ugly, bad anatomy, artifacts, noise",
-                    "num_frames": 121,
-                    "frame_rate": 25,
-                    "guidance_scale": 7.5,
-                    "num_inference_steps": 40,
-                },
-            },
-        ]
-
-        for model in replicate_models:
-            try:
-                print(f"🎬 Replicate: probando {model['name']}...")
-                payload = {"input": model["input"]}
-                if model.get("version"):
-                    payload["version"] = model["version"]
-
-                async with httpx.AsyncClient(timeout=40) as c:
-                    r = await c.post(
-                        model["url"],
-                        headers={"Authorization": f"Token {REPLICATE_KEY}", "Content-Type": "application/json"},
-                        json=payload
-                    )
-                    d = r.json()
-                    print(f"🎬 Replicate {model['name']}: status={r.status_code} response={str(d)[:150]}")
-
-                    if r.status_code in (402, 403):
-                        errors[model["name"]] = d.get("detail", "Sin créditos")[:80]
-                        continue
-
-                    pred_id = d.get("id")
-                    if not pred_id:
-                        errors[model["name"]] = d.get("detail", str(d))[:80]
-                        continue
-
-                video_url = await replicate_poll(pred_id, model["name"])
-                if video_url:
-                    print(f"✅ Video OK con {model['name']}: {video_url}")
-                    # Consumir crédito si hay usuario
-                    if user:
-                        await consume_video_credit(user, model["name"], prompt[:80])
-                    cost_note = ""
-                    if "720p" in model["name"]: cost_note = "\n\n> 💡 *Wan2.1 720p · 1 crédito de video usado*"
-                    elif "480p" in model["name"]: cost_note = "\n\n> 💡 *Wan2.1 480p · 1 crédito de video usado*"
-                    elif "minimax" in model["name"]: cost_note = "\n\n> 💡 *Minimax Video · 1 crédito de video usado*"
-                    else: cost_note = "\n\n> 💡 *1 crédito de video usado*"
-                    return video_url, f"🎬 Video generado con **Replicate** ({model['name']}).{cost_note}", f"replicate · {model['name']}"
-                else:
-                    errors[model["name"]] = "failed o timeout en polling"
-
-            except Exception as e:
-                errors[model["name"]] = str(e)[:60]
-                print(f"🎬 Replicate {model['name']} exception: {e}")
-                continue
-
-    # ── 3. FAL.ai — cascada: Wan T2V → LTX Video → Fast-SVD ──────────────────
-    if FAL_KEY:
-        fal_models = [
-            {
-                "name": "fal · wan-t2v",
-                "url": "https://queue.fal.run/fal-ai/wan-t2v",
-                "body": {"prompt": enhanced, "num_frames": 81, "frames_per_second": 16},
-                "result_key": "video.url",
-            },
-            {
-                "name": "fal · ltx-video",
-                "url": "https://queue.fal.run/fal-ai/ltx-video",
-                "body": {"prompt": enhanced, "negative_prompt": "low quality, blurry", "num_frames": 121},
-                "result_key": "video.url",
-            },
-            {
-                "name": "fal · fast-svd",
-                "url": "https://queue.fal.run/fal-ai/fast-svd-lcm",
-                "body": {"prompt": enhanced, "num_frames": 14, "fps": 7},
-                "result_key": "video.url",
-            },
-        ]
-
-        def _extract(d: dict, key_path: str):
-            for k in key_path.split("."):
-                if not isinstance(d, dict): return None
-                d = d.get(k)
-            return d
-
-        for fal_model in fal_models:
-            try:
-                print(f"🎬 FAL.ai: probando {fal_model['name']}...")
-                async with httpx.AsyncClient(timeout=40) as c:
-                    r = await c.post(
-                        fal_model["url"],
-                        headers={"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"},
-                        json=fal_model["body"]
-                    )
-                    d = r.json()
-                    print(f"🎬 FAL {fal_model['name']}: status={r.status_code} response={str(d)[:120]}")
-                    if not r.is_success:
-                        errors[fal_model["name"]] = d.get("detail", f"HTTP {r.status_code}")[:80]
-                        continue
-
-                    request_id = d.get("request_id")
-                    if not request_id:
-                        errors[fal_model["name"]] = "sin request_id"
-                        continue
-
-                    status_url = fal_model["url"].rstrip("/") + f"/requests/{request_id}"
-                    video_url = None
-                    async with httpx.AsyncClient(timeout=250) as c2:
-                        for attempt in range(24):
-                            await asyncio.sleep(10)
-                            r2 = await c2.get(status_url, headers={"Authorization": f"Key {FAL_KEY}"})
-                            d2 = r2.json()
-                            fal_status = d2.get("status")
-                            print(f"🎬 FAL {fal_model['name']} polling {attempt+1}/24: {fal_status}")
-                            if fal_status == "COMPLETED":
-                                video_url = _extract(d2, fal_model["result_key"])
-                                break
-                            elif fal_status in ("FAILED", "ERROR"):
-                                errors[fal_model["name"]] = d2.get("error", "failed")[:80]
-                                break
-
-                    if video_url:
-                        print(f"✅ Video OK con {fal_model['name']}: {video_url}")
-                        return video_url, f"🎬 Video generado con **FAL.ai** ({fal_model['name'].split('·')[1].strip()}).", fal_model["name"]
-                    else:
-                        errors.setdefault(fal_model["name"], "timeout o sin URL en output")
-
-            except Exception as e:
-                errors[fal_model["name"]] = str(e)[:60]
-                print(f"🎬 FAL {fal_model['name']} exception: {e}")
-                continue
-
-    # ── 4. ModelsLab ───────────────────────────────────────────────────────────
-    if MODELSLAB_KEY:
-        try:
-            print("🎬 ModelsLab: intentando...")
-            async with httpx.AsyncClient(timeout=150) as c:
-                r = await c.post(
-                    "https://modelslab.com/api/v6/video/text2video",
-                    json={
-                        "key": MODELSLAB_KEY,
-                        "prompt": enhanced,
-                        "negative_prompt": "low quality, blurry, distorted",
-                        "height": 512, "width": 912,
-                        "num_frames": 16,
-                        "num_inference_steps": 20,
-                        "guidance_scale": 7.5,
-                    }
-                )
-                d = r.json()
-                print(f"🎬 ModelsLab: status={r.status_code} response={str(d)[:120]}")
-                if d.get("status") == "success" and d.get("output"):
-                    return d["output"][0], "🎬 Video generado con **ModelsLab**.", "modelslab · video"
-                elif d.get("status") == "processing" and d.get("fetch_result"):
-                    fetch_url = d["fetch_result"]
-                    for _ in range(18):
-                        await asyncio.sleep(10)
-                        r2 = await c.post(fetch_url, json={"key": MODELSLAB_KEY})
-                        d2 = r2.json()
-                        if d2.get("status") == "success" and d2.get("output"):
-                            return d2["output"][0], "🎬 Video generado con **ModelsLab**.", "modelslab · video"
-                errors["modelslab"] = d.get("message", str(d))[:80]
-        except Exception as e:
-            errors["modelslab"] = str(e)[:80]
-
-    # ── 5. Fallback: descripción cinematográfica ───────────────────────────────
-    video_system = (
-        get_system(mode, username) +
-        "\n\nEl usuario pidió un video con IA. Describí el video de forma muy cinematográfica y detallada — "
-        "escenas, ángulos de cámara, iluminación, movimiento, duración estimada de cada toma. "
-        "Al final indicá brevemente qué API de video configurar para generarlo automáticamente."
-    )
-    hist = history[:-1] if history else []
-    desc_msgs = build_messages(video_system, hist, f"Video: {prompt}\nPrompt mejorado: {enhanced}")
-    description, _ = await groq_with_fallback(desc_msgs, "llama-3.3-70b-versatile")
-
-    if errors:
-        errs_str = " | ".join([f"{k}: {v[:60]}" for k, v in errors.items()])
-        no_credits = any(
-            kw in v.lower() for v in errors.values()
-            for kw in ("credit", "quota", "billing", "insufficient", "free time")
-        )
-        if no_credits:
-            honest_msg = (
-                f"Intenté generar el video pero las APIs no tienen créditos disponibles ahora mismo.\n\n"
-                f"Te doy la descripción cinematográfica:\n\n{description}\n\n"
-                f"*Para activar la generación real cargá crédito en Replicate (replicate.com/account/billing).*"
+    # ── Verificar saldo ────────────────────────────────────────────────────────
+    if user:
+        credits = await get_video_credits(user)
+        if round(float(credits["balance_usd"]), 4) < price_info["user_price"]:
+            return (
+                "",
+                f"❌ Saldo insuficiente (${credits['balance_usd']:.2f} USD). "
+                f"Este video cuesta ${price_info['user_price']:.2f} USD. "
+                f"Cargá créditos desde el botón 🎬 en el sidebar.",
+                "error · insufficient_balance"
             )
-        else:
-            honest_msg = f"{description}\n\n> ⚠️ APIs probadas sin éxito: {errs_str}"
-    else:
-        honest_msg = description
 
-    return "", honest_msg, "orquesta · video-descripcion"
+    # ── Enviar request a FAL.ai ────────────────────────────────────────────────
+    fal_input = {
+        "prompt": enhanced,
+        "negative_prompt": (
+            "cartoon, animated, CGI, 3D render, illustration, watermark, text overlay, "
+            "low quality, blurry, distorted, deformed, artifacts, noise, overexposed, "
+            "underexposed, bad anatomy, ugly, worst quality, jpeg artifacts"
+        ),
+        "duration": str(duration_s),
+        "aspect_ratio": "16:9",
+        "cfg_scale": 0.5,
+    }
+    if model_key == "kling26pro":
+        fal_input["enable_audio"] = True
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post(
+                f"https://queue.fal.run/{endpoint}",
+                headers={
+                    "Authorization": f"Key {FAL_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"input": fal_input},
+            )
+            d = r.json()
+            print(f"🎬 FAL submit: status={r.status_code} resp={str(d)[:200]}")
+
+            if not r.is_success:
+                err = d.get("detail") or d.get("error") or f"HTTP {r.status_code}"
+                return "", f"❌ Error al iniciar la generación en FAL.ai: {err}", "error"
+
+            request_id = d.get("request_id")
+            if not request_id:
+                return "", "❌ FAL.ai no devolvió request_id. Intentá de nuevo.", "error"
+
+    except Exception as e:
+        print(f"🎬 FAL submit exception: {e}")
+        return "", f"❌ Error de conexión con FAL.ai: {str(e)[:100]}", "error"
+
+    # ── Polling hasta completar ────────────────────────────────────────────────
+    status_url = f"https://queue.fal.run/{endpoint}/requests/{request_id}"
+    video_url = None
+    max_polls = 36  # 6 minutos (36 × 10s)
+
+    async with httpx.AsyncClient(timeout=400) as c:
+        for attempt in range(max_polls):
+            await asyncio.sleep(10)
+            try:
+                r2 = await c.get(status_url, headers={"Authorization": f"Key {FAL_KEY}"})
+                d2 = r2.json()
+                fal_status = d2.get("status", "unknown")
+                print(f"🎬 FAL polling {attempt+1}/{max_polls}: {fal_status}")
+
+                if fal_status == "COMPLETED":
+                    output = d2.get("output") or {}
+                    vid = output.get("video") or {}
+                    video_url = vid.get("url") if isinstance(vid, dict) else None
+                    if not video_url:
+                        video_url = output.get("video_url") or output.get("url")
+                    print(f"✅ FAL completed: {video_url}")
+                    break
+
+                elif fal_status in ("FAILED", "ERROR", "CANCELLED"):
+                    err_detail = d2.get("error") or d2.get("detail") or fal_status
+                    print(f"❌ FAL failed: {err_detail}")
+                    return "", f"❌ El video falló durante la generación: {str(err_detail)[:100]}", "error"
+
+            except Exception as e:
+                print(f"🎬 FAL polling exception at {attempt}: {e}")
+                continue
+
+    if not video_url:
+        return (
+            "",
+            "❌ Timeout: el video tardó más de 6 minutos. FAL.ai puede estar con alta demanda — intentá de nuevo en unos minutos.",
+            "error · timeout"
+        )
+
+    # ── Descontar saldo ────────────────────────────────────────────────────────
+    if user:
+        await consume_video_credit(user, model_key, duration_s, prompt[:80])
+
+    label_model = "Kling 2.5 Pro" if model_key == "kling25pro" else "Kling 2.6 Pro (audio)"
+    audio_note = " · Audio nativo incluido 🔊" if model_key == "kling26pro" else ""
+    cost_note = f"\n\n> 💰 *${price_info['user_price']:.2f} USD · {label_model}{audio_note}*"
+
+    return (
+        video_url,
+        f"🎬 Video generado con **FAL.ai** ({label_model} · {duration_s}s).{cost_note}",
+        f"fal · {model_key} · {duration_s}s",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1338,9 +1214,12 @@ class OrchestrateReq(BaseModel):
     language: str = ""
     tts_enabled: bool = False
     conversation_id: str = ""
-    user_id: str = ""      # id de tabla users
-    auth_id: str = ""      # auth_id de Supabase Auth
-    user_plan: str = ""    # ignorado por seguridad — el plan siempre viene de DB""
+    user_id: str = ""           # id de tabla users
+    auth_id: str = ""           # auth_id de Supabase Auth
+    user_plan: str = ""         # ignorado por seguridad — el plan siempre viene de DB
+    # Opciones de video
+    video_model: str = "kling25pro"   # kling25pro | kling26pro
+    video_duration: int = 5           # 5 | 10
 
 class OrchestrateResp(BaseModel):
     result: str
@@ -1501,7 +1380,12 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
                         result = f"No pude generar el archivo. Reformulá el pedido con más detalle."
 
         elif task == "video_gen":
-            video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, username, user=user)
+            video_url, result, label = await generate_video_smart(
+                req.prompt, req.history, req.mode, username,
+                user=user,
+                model_key=req.video_model,
+                duration_s=req.video_duration,
+            )
 
         elif task == "image_gen":
             img_url, result, label = await generate_image_smart(req.prompt)
@@ -2519,7 +2403,12 @@ async def orchestrate_stream(req: OrchestrateReq, request: Request, authorizatio
         async def video_stream_gen():
             yield f"data: {json.dumps({'text': '⏳ Generando tu video con IA...', 'done': False})}\n\n"
             try:
-                video_url, result, label = await generate_video_smart(req.prompt, req.history, req.mode, username, user=user)
+                video_url, result, label = await generate_video_smart(
+                    req.prompt, req.history, req.mode, username,
+                    user=user,
+                    model_key=req.video_model,
+                    duration_s=req.video_duration,
+                )
                 payload = {"text": result, "done": True, "label": label}
                 if video_url:
                     payload["video_url"] = video_url
@@ -2591,6 +2480,106 @@ async def orchestrate_stream(req: OrchestrateReq, request: Request, authorizatio
 #  ENDPOINTS DE CRÉDITOS DE VIDEO
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  RECARGA DE SALDO DE VIDEO — El usuario paga, Orquesta acredita USD
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Packs predefinidos (precio al usuario, saldo que se acredita)
+VIDEO_PACKS = {
+    "pack_5":  {"usd": 5.00,  "label": "Pack $5  — ~7 videos de 5s"},
+    "pack_10": {"usd": 10.00, "label": "Pack $10 — ~14 videos de 5s"},
+    "pack_20": {"usd": 20.00, "label": "Pack $20 — ~28 videos de 5s"},
+    "pack_50": {"usd": 50.00, "label": "Pack $50 — ~70 videos de 5s"},
+}
+
+class VideoTopupReq(BaseModel):
+    pack_id: str       # "pack_5" | "pack_10" | "pack_20" | "pack_50"
+    user_id: str = ""
+    user_email: str = ""
+    access_token: str = ""
+
+@router.post("/video/topup")
+async def video_topup(req: VideoTopupReq, authorization: str = Header(None)):
+    """Crea preferencia de MercadoPago para recargar saldo de video."""
+    if not MP_ACCESS_TOKEN:
+        raise HTTPException(500, "MercadoPago no configurado")
+
+    pack = VIDEO_PACKS.get(req.pack_id)
+    if not pack:
+        raise HTTPException(400, f"Pack inválido: {req.pack_id}")
+
+    # Obtener usuario
+    user = await get_optional_user(authorization)
+    if not user and req.user_id and supabase:
+        try:
+            result = supabase.table("users").select("*").eq("id", req.user_id).single().execute()
+            if result.data: user = result.data
+        except: pass
+    if not user and req.user_email:
+        user = {"id": req.user_id or str(uuid.uuid4()), "email": req.user_email, "name": "", "auth_id": ""}
+    if not user:
+        raise HTTPException(401, "No autenticado")
+
+    # Crear preferencia en MercadoPago
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(
+            "https://api.mercadopago.com/checkout/preferences",
+            headers={"Authorization": f"Bearer {MP_ACCESS_TOKEN}", "Content-Type": "application/json"},
+            json={
+                "items": [{
+                    "title": f"Orquesta AI — {pack['label']}",
+                    "quantity": 1,
+                    "unit_price": pack["usd"],
+                    "currency_id": "USD",
+                }],
+                "payer": {"email": user.get("email", "")},
+                "external_reference": f"video_topup|{user['id']}|{req.pack_id}|{pack['usd']}",
+                "metadata": {
+                    "user_id": user["id"],
+                    "pack_id": req.pack_id,
+                    "amount_usd": pack["usd"],
+                    "type": "video_topup",
+                },
+                "back_urls": {
+                    "success": f"{APP_URL}/?video_topup=success&pack={req.pack_id}",
+                    "failure": f"{APP_URL}/?video_topup=failed",
+                    "pending": f"{APP_URL}/?video_topup=pending",
+                },
+                "auto_return": "approved",
+                "notification_url": f"{APP_URL}/api/webhooks/mercadopago",
+            }
+        )
+        d = r.json()
+        if not r.is_success:
+            raise HTTPException(502, f"Error MercadoPago: {d.get('message', 'Unknown')}")
+        return {
+            "checkout_url": d.get("init_point") or d.get("sandbox_init_point"),
+            "preference_id": d.get("id"),
+            "pack": pack,
+        }
+
+
+@router.get("/video/balance")
+async def get_video_balance(authorization: str = Header(None)):
+    """Retorna el saldo de video del usuario en USD."""
+    user = await get_optional_user(authorization)
+    if not user:
+        return {"balance_usd": 0.0, "is_pro": False, "prices": list(VIDEO_PRICES.keys())}
+    credits = await get_video_credits(user)
+
+    # También devolver tabla de precios
+    prices_table = [
+        {
+            "model_key": mk,
+            "duration_s": dur,
+            "label": info["label"],
+            "user_price_usd": info["user_price"],
+        }
+        for (mk, dur), info in VIDEO_PRICES.items()
+    ]
+    return {**credits, "prices": sorted(prices_table, key=lambda x: x["user_price_usd"])}
+
 @router.get("/video/credits")
 async def get_my_video_credits(authorization: str = Header(None)):
     """Retorna créditos de video disponibles para el usuario."""
@@ -2653,25 +2642,36 @@ async def confirm_video_generation(data: dict, authorization: str = Header(None)
         }
 
     credits = await get_video_credits(user)
-    prompt = data.get("prompt", "")
+    balance = credits["balance_usd"]
 
-    # Estimar modelo y costo
-    p_lower = prompt.lower()
-    estimated_cost = 0.80  # default 720p
-    model_hint = "Wan2.1 720p (mejor calidad)"
+    # Construir tabla de precios con saldo disponible
+    prices_table = []
+    for (mk, dur), info in VIDEO_PRICES.items():
+        can_afford = balance >= info["user_price"]
+        prices_table.append({
+            "model_key": mk,
+            "duration_s": dur,
+            "label": info["label"],
+            "user_price_usd": info["user_price"],
+            "fal_cost_usd": info["fal_cost"],
+            "can_afford": can_afford,
+        })
+
+    # Ordenar por precio
+    prices_table.sort(key=lambda x: x["user_price_usd"])
+
+    cheapest_available = next((p for p in prices_table if p["can_afford"]), None)
+    can_generate = cheapest_available is not None
 
     return {
-        "can_generate": credits["available"] > 0,
-        "credits_available": credits["available"],
-        "credits_used_this_month": credits["used_this_month"],
-        "monthly_allowance": credits["monthly_allowance"],
-        "estimated_cost_usd": estimated_cost,
-        "model_hint": model_hint,
-        "reason": "ok" if credits["available"] > 0 else "no_credits",
+        "can_generate": can_generate,
+        "balance_usd": balance,
+        "prices": prices_table,
+        "reason": "ok" if can_generate else "insufficient_balance",
         "message": (
-            f"Tenés {credits['available']} crédito(s) de video disponibles este mes."
-            if credits["available"] > 0
-            else "Sin créditos de video disponibles. Podés comprar un pack extra."
+            f"Saldo disponible: **${balance:.2f} USD**"
+            if can_generate
+            else f"Saldo insuficiente (${balance:.2f} USD). Cargá créditos para generar videos."
         ),
     }
 
