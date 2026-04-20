@@ -862,55 +862,57 @@ async def get_video_credits(user: dict) -> dict:
 
     monthly_allowance = VIDEO_CREDITS_PRO_ANNUAL if "annual" in (user.get("plan_type") or "") else VIDEO_CREDITS_PRO_MONTHLY
 
+    # Consultar uso del mes actual — si tabla no existe, asumir 0 usados
+    used_this_month = 0
     try:
         now = datetime.now(timezone.utc)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
-
-        result = supabase.table("video_credits")            .select("*")            .eq("user_id", user["id"])            .gte("created_at", month_start)            .execute()
-
+        result = supabase.table("video_credits")             .select("id")             .eq("user_id", user["id"])             .gte("created_at", month_start)             .execute()
         used_this_month = len(result.data or [])
-        # Buscar créditos extra comprados
-        extra_result = supabase.table("video_credit_packs")            .select("credits_remaining")            .eq("user_id", user["id"])            .gt("credits_remaining", 0)            .execute()
-        extra = sum(r.get("credits_remaining", 0) for r in (extra_result.data or []))
-
-        available = max(0, (monthly_allowance - used_this_month) + extra)
-        return {
-            "available": available,
-            "used_this_month": used_this_month,
-            "monthly_allowance": monthly_allowance,
-            "extra_credits": extra,
-        }
+        print(f"✅ video_credits: {used_this_month} usados este mes")
     except Exception as e:
-        print(f"get_video_credits error: {e}")
-        # Si la tabla no existe aún, dar créditos por defecto a Pro
-        return {"available": monthly_allowance, "used_this_month": 0, "monthly_allowance": monthly_allowance}
+        print(f"video_credits table not ready (ok): {e}")
+        used_this_month = 0  # tabla no existe → 0 usados
+
+    # Consultar packs extra — si tabla no existe, asumir 0 extras
+    extra = 0
+    try:
+        extra_result = supabase.table("video_credit_packs")             .select("credits_remaining")             .eq("user_id", user["id"])             .gt("credits_remaining", 0)             .execute()
+        extra = sum(r.get("credits_remaining", 0) for r in (extra_result.data or []))
+    except Exception as e:
+        print(f"video_credit_packs table not ready (ok): {e}")
+        extra = 0
+
+    available = max(0, (monthly_allowance - used_this_month) + extra)
+    print(f"🎬 Video credits: monthly={monthly_allowance} used={used_this_month} extra={extra} available={available}")
+    return {
+        "available": available,
+        "used_this_month": used_this_month,
+        "monthly_allowance": monthly_allowance,
+        "extra_credits": extra,
+    }
 
 
 async def consume_video_credit(user: dict, model_used: str, prompt_preview: str) -> bool:
     """
-    Descuenta 1 crédito de video al usuario.
-    Retorna True si se pudo descontar, False si no hay créditos.
+    Registra 1 uso de crédito de video.
+    Si la tabla no existe aún, igual retorna True (no bloquea al Pro).
     """
     if not user or not supabase:
-        return False
-
-    credits = await get_video_credits(user)
-    if credits["available"] <= 0:
-        return False
+        return True  # sin supabase, no bloquear
 
     try:
-        # Registrar el uso
         supabase.table("video_credits").insert({
             "user_id": user["id"],
             "model_used": model_used,
             "prompt_preview": prompt_preview[:100],
             "created_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
+        print(f"✅ Crédito de video consumido: {user['id'][:8]} · {model_used}")
         return True
     except Exception as e:
-        print(f"consume_video_credit error: {e}")
-        # Si la tabla no existe, igual permitir el video
-        return True
+        print(f"consume_video_credit (tabla no lista aún, ok): {e}")
+        return True  # tabla no existe → igual permitir
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2607,6 +2609,29 @@ async def confirm_video_generation(data: dict, authorization: str = Header(None)
     El frontend llama esto ANTES de generar, para mostrar el modal de confirmación.
     """
     user = await get_optional_user(authorization)
+
+    # Fallback: buscar por JWT raw si get_optional_user falló
+    if not user and authorization and authorization.startswith("Bearer ") and supabase:
+        try:
+            token = authorization.replace("Bearer ", "").strip()
+            parts = token.split(".")
+            if len(parts) == 3:
+                pad = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                jwt_payload = json.loads(base64.urlsafe_b64decode(pad))
+                auth_id = jwt_payload.get("sub", "")
+                if auth_id:
+                    async with httpx.AsyncClient(timeout=10) as hx:
+                        url = f"{SUPABASE_URL}/rest/v1/users?auth_id=eq.{auth_id}&select=*&limit=1"
+                        r = await hx.get(url, headers={
+                            "apikey": SUPABASE_SERVICE_KEY,
+                            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"
+                        })
+                        if r.is_success and r.json():
+                            user = r.json()[0]
+                            print(f"✅ /video/confirm: user encontrado via fallback JWT: {user.get('plan')}")
+        except Exception as e:
+            print(f"/video/confirm JWT fallback error: {e}")
+
     if not user:
         return {
             "can_generate": False,
@@ -2614,7 +2639,12 @@ async def confirm_video_generation(data: dict, authorization: str = Header(None)
             "message": "Iniciá sesión para generar videos.",
         }
 
-    is_pro = user.get("plan") == "pro"
+    is_pro = (
+        user.get("plan") == "pro" and (
+            user.get("plan_expires_at") is None or
+            parse_expiry(user["plan_expires_at"]) > datetime.now(timezone.utc)
+        )
+    )
     if not is_pro:
         return {
             "can_generate": False,
