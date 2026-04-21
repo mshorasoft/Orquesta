@@ -2039,7 +2039,11 @@ async def send_improvement_email(proposal: dict) -> bool:
     subject = f"🤖 Orquesta: {proposal.get('description','mejora detectada')[:60]}"
     print(f"📧 Enviando notificación de mejora {proposal['id']} a {OWNER_EMAIL}...")
 
-    # ── 1. Resend (el más confiable, funciona con cualquier email) ─────────────
+    # ── 1. Resend ─────────────────────────────────────────────────────────────
+    # NOTA: En plan gratuito de Resend, "from" debe ser onboarding@resend.dev
+    # y solo funciona si el destinatario está verificado en tu cuenta Resend.
+    # Para usar tu propio dominio, verificarlo en resend.com/domains
+    RESEND_FROM = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
     if RESEND_KEY:
         try:
             async with httpx.AsyncClient(timeout=15) as c:
@@ -2047,18 +2051,18 @@ async def send_improvement_email(proposal: dict) -> bool:
                     "https://api.resend.com/emails",
                     headers={"Authorization": f"Bearer {RESEND_KEY}", "Content-Type": "application/json"},
                     json={
-                        "from": "Orquesta AI <onboarding@resend.dev>",
+                        "from": f"Orquesta AI <{RESEND_FROM}>",
                         "to": [OWNER_EMAIL],
                         "subject": subject,
                         "html": html_body,
                     }
                 )
-                print(f"📧 Resend: {r.status_code} | {r.text[:150]}")
+                print(f"📧 Resend: {r.status_code} | {r.text[:200]}")
                 if r.is_success:
                     print(f"✅ Email enviado via Resend a {OWNER_EMAIL}")
                     return True
                 else:
-                    print(f"⚠️ Resend falló ({r.status_code}), probando SendGrid...")
+                    print(f"⚠️ Resend falló ({r.status_code}): {r.text[:100]}, probando SendGrid...")
         except Exception as e:
             print(f"⚠️ Resend exception: {e}, probando SendGrid...")
 
@@ -2073,10 +2077,18 @@ async def send_improvement_email(proposal: dict) -> bool:
                     "https://api.sendgrid.com/v3/mail/send",
                     headers={"Authorization": f"Bearer {SENDGRID_KEY}", "Content-Type": "application/json"},
                     json={
-                        "personalizations": [{"to": [{"email": OWNER_EMAIL}]}],
+                        "personalizations": [{"to": [{"email": OWNER_EMAIL, "name": "Horacio"}]}],
                         "from": {"email": sender_email, "name": "Orquesta AI"},
+                        "reply_to": {"email": sender_email, "name": "Orquesta AI"},
                         "subject": subject,
-                        "content": [{"type": "text/html", "value": html_body}]
+                        "content": [{"type": "text/html", "value": html_body}],
+                        "tracking_settings": {
+                            "click_tracking": {"enable": False},
+                            "open_tracking": {"enable": False}
+                        },
+                        "mail_settings": {
+                            "bypass_spam_management": {"enable": True}
+                        }
                     }
                 )
                 print(f"📧 SendGrid: {r.status_code} | {r.text[:150]}")
