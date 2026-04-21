@@ -1117,20 +1117,20 @@ STRICT RULES:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  GENERACIÓN DE MÚSICA — udioapi.pro (Suno + Udio)
+#  GENERACIÓN DE MÚSICA — Cascada: udioapi.pro → FAL.ai Stable Audio
 # ─────────────────────────────────────────────────────────────────────────────
 
 UDIO_API_KEY = os.getenv("UDIO_API_KEY", "")
 
 async def generate_music_smart(prompt: str, username: str = "") -> tuple[str, str, str]:
     """
-    Genera una canción completa usando udioapi.pro.
+    Genera una canción completa usando cascada:
+    1° udioapi.pro  (si UDIO_API_KEY está configurada y tiene créditos)
+    2° FAL.ai Stable Audio (fallback automático, pay-per-use)
     Retorna: (audio_url, result_text, label)
     """
-    if not UDIO_API_KEY:
-        return "", "❌ `UDIO_API_KEY` no configurada en Railway. Pedile al admin que la active.", "error"
 
-    # Enriquecer el prompt con Groq para mejor resultado musical
+    # ── Enriquecimiento del prompt con Groq ──────────────────────────────────
     async def enhance_music_prompt(p: str) -> dict:
         try:
             msgs = [
@@ -1139,6 +1139,7 @@ Dado el pedido del usuario, generá:
 1. Un prompt en inglés para generar la canción (descriptivo, con género, mood, instrumentos, estilo)
 2. Una letra en español coherente con el pedido (2 estrofas + coro, máximo 150 palabras)
 3. Tags de género (ej: "cumbia, tropical, festivo, guitarra, acordeón")
+4. Un título creativo para la canción
 
 Respondé SOLO con JSON:
 {"prompt_en": "...", "lyrics": "...", "tags": "...", "title": "..."}"""},
@@ -1154,89 +1155,172 @@ Respondé SOLO con JSON:
         return {"prompt_en": p, "lyrics": "", "tags": "music", "title": "Mi Canción"}
 
     enhanced = await enhance_music_prompt(prompt)
-    print(f"🎵 Generando música: {enhanced.get('title','?')} | tags: {enhanced.get('tags','')}")
+    title  = enhanced.get("title", "Canción")
+    tags   = enhanced.get("tags", "music")
+    lyrics = enhanced.get("lyrics", "")
+    music_prompt_en = enhanced.get("prompt_en", prompt)
+    print(f"🎵 Generando música: {title} | tags: {tags}")
 
-    # Llamar a udioapi.pro
+    # ════════════════════════════════════════════════════════════════════════
+    #  OPCIÓN 1: udioapi.pro
+    # ════════════════════════════════════════════════════════════════════════
+    udio_skip_reason = None
+
+    if not UDIO_API_KEY:
+        udio_skip_reason = "UDIO_API_KEY no configurada"
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    "https://udioapi.pro/api/generate",
+                    headers={
+                        "Authorization": f"Bearer {UDIO_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "prompt": music_prompt_en[:300],
+                        "lyrics": lyrics[:500],
+                        "tags": tags,
+                        "title": title,
+                        "make_instrumental": not bool(lyrics),
+                    }
+                )
+                d = r.json()
+                print(f"🎵 Udio submit: {r.status_code} | {str(d)[:200]}")
+
+                # Detectar errores de crédito o plan → pasar al fallback
+                err_msg = (d.get("message") or d.get("error") or "").lower()
+                if not r.is_success or any(k in err_msg for k in ["no credit", "credit", "quota", "limit", "plan", "insufficient"]):
+                    udio_skip_reason = f"Udio sin créditos ({err_msg[:60]})"
+                else:
+                    # Obtener task_id para polling
+                    task_id = d.get("taskId") or d.get("task_id") or d.get("id")
+                    if not task_id:
+                        audio_url = d.get("audioUrl") or d.get("audio_url") or d.get("url")
+                        if audio_url:
+                            lyrics_preview = lyrics[:200]
+                            lyrics_note = f"\n\n**Letra:**\n_{lyrics_preview}..._" if lyrics_preview else ""
+                            result_text = f"🎵 **{title}** · _{tags}_{lyrics_note}\n\n> 🎧 *Generada con Udio AI · Hacé clic en ▶️ para escuchar*"
+                            return audio_url, result_text, "udio · música"
+                        udio_skip_reason = "Udio no devolvió task_id ni URL"
+                    else:
+                        # Polling Udio (máx 4 min)
+                        audio_url = None
+                        async with httpx.AsyncClient(timeout=300) as c2:
+                            for attempt in range(24):
+                                await asyncio.sleep(10)
+                                try:
+                                    r2 = await c2.get(
+                                        f"https://udioapi.pro/api/task/{task_id}",
+                                        headers={"Authorization": f"Bearer {UDIO_API_KEY}"}
+                                    )
+                                    d2 = r2.json()
+                                    status = d2.get("status", "").lower()
+                                    print(f"🎵 Udio polling {attempt+1}/24: {status}")
+
+                                    if status in ("completed", "success", "done"):
+                                        songs = d2.get("songs") or d2.get("tracks") or d2.get("results") or []
+                                        if songs and isinstance(songs, list):
+                                            audio_url = songs[0].get("audioUrl") or songs[0].get("audio_url") or songs[0].get("url")
+                                        if not audio_url:
+                                            audio_url = (d2.get("audioUrl") or d2.get("audio_url") or
+                                                         d2.get("url") or d2.get("output"))
+                                        print(f"✅ Udio completado: {audio_url}")
+                                        break
+                                    elif status in ("failed", "error", "cancelled"):
+                                        udio_skip_reason = d2.get("error") or d2.get("message") or status
+                                        break
+                                except Exception as pe:
+                                    print(f"🎵 Udio polling error {attempt}: {pe}")
+                                    continue
+
+                        if audio_url:
+                            lyrics_preview = lyrics[:200]
+                            lyrics_note = f"\n\n**Letra:**\n_{lyrics_preview}..._" if lyrics_preview else ""
+                            result_text = f"🎵 **{title}** · _{tags}_{lyrics_note}\n\n> 🎧 *Generada con Udio AI · Hacé clic en ▶️ para escuchar*"
+                            return audio_url, result_text, "udio · música"
+                        elif not udio_skip_reason:
+                            udio_skip_reason = "Timeout o sin URL en respuesta"
+
+        except Exception as e:
+            udio_skip_reason = f"Error de conexión: {str(e)[:80]}"
+            print(f"🎵 Udio error: {e}")
+
+    print(f"🎵 Udio no disponible ({udio_skip_reason}), usando FAL.ai Stable Audio como fallback...")
+
+    # ════════════════════════════════════════════════════════════════════════
+    #  OPCIÓN 2: FAL.ai Stable Audio (fallback)
+    # ════════════════════════════════════════════════════════════════════════
+    FAL_KEY = os.getenv("FAL_API_KEY", "")
+    if not FAL_KEY:
+        return "", "❌ No se pudo generar música: Udio sin créditos y FAL_API_KEY no configurada. Contactá al admin.", "error"
+
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
-                "https://udioapi.pro/api/generate",
+                "https://queue.fal.run/fal-ai/stable-audio",
                 headers={
-                    "Authorization": f"Bearer {UDIO_API_KEY}",
+                    "Authorization": f"Key {FAL_KEY}",
                     "Content-Type": "application/json"
                 },
                 json={
-                    "prompt": enhanced.get("prompt_en", prompt)[:300],
-                    "lyrics": enhanced.get("lyrics", "")[:500],
-                    "tags": enhanced.get("tags", "music"),
-                    "title": enhanced.get("title", "Canción Orquesta"),
-                    "make_instrumental": not bool(enhanced.get("lyrics")),
+                    "prompt": music_prompt_en[:500],
+                    "seconds_total": 30,
+                    "steps": 100,
                 }
             )
             d = r.json()
-            print(f"🎵 Udio submit: {r.status_code} | {str(d)[:200]}")
+            print(f"🎵 FAL music submit: {r.status_code} | {str(d)[:200]}")
 
             if not r.is_success:
-                err = d.get("message") or d.get("error") or f"HTTP {r.status_code}"
+                err = d.get("message") or d.get("detail") or f"HTTP {r.status_code}"
                 return "", f"❌ Error al generar la música: {err}", "error"
 
-            # Obtener task_id para polling
-            task_id = d.get("taskId") or d.get("task_id") or d.get("id")
-            if not task_id:
-                # Algunos endpoints devuelven la URL directo
-                audio_url = d.get("audioUrl") or d.get("audio_url") or d.get("url")
-                if audio_url:
-                    title = enhanced.get("title", "Canción")
-                    return audio_url, f"🎵 **{title}** generada con IA", "udio · música"
-                return "", "❌ Udio no devolvió task_id ni URL. Intentá de nuevo.", "error"
+            request_id = d.get("request_id")
+            if not request_id:
+                return "", "❌ FAL no devolvió request_id. Intentá de nuevo.", "error"
 
     except Exception as e:
-        print(f"🎵 Udio submit error: {e}")
-        return "", f"❌ Error de conexión con Udio: {str(e)[:100]}", "error"
+        print(f"🎵 FAL music submit error: {e}")
+        return "", f"❌ Error de conexión con FAL: {str(e)[:100]}", "error"
 
-    # Polling hasta que la canción esté lista (máx 4 minutos)
+    # Polling FAL (máx 3 min)
     audio_url = None
     async with httpx.AsyncClient(timeout=300) as c:
-        for attempt in range(24):  # 24 × 10s = 4 min
+        for attempt in range(18):  # 18 × 10s = 3 min
             await asyncio.sleep(10)
             try:
                 r2 = await c.get(
-                    f"https://udioapi.pro/api/task/{task_id}",
-                    headers={"Authorization": f"Bearer {UDIO_API_KEY}"}
+                    f"https://queue.fal.run/fal-ai/stable-audio/requests/{request_id}",
+                    headers={"Authorization": f"Key {FAL_KEY}"}
                 )
                 d2 = r2.json()
                 status = d2.get("status", "").lower()
-                print(f"🎵 Udio polling {attempt+1}/24: {status}")
+                print(f"🎵 FAL music polling {attempt+1}/18: {status}")
 
-                if status in ("completed", "success", "done"):
-                    # Intentar extraer URL de distintas estructuras
-                    songs = d2.get("songs") or d2.get("tracks") or d2.get("results") or []
-                    if songs and isinstance(songs, list):
-                        audio_url = songs[0].get("audioUrl") or songs[0].get("audio_url") or songs[0].get("url")
-                    if not audio_url:
-                        audio_url = (d2.get("audioUrl") or d2.get("audio_url") or
-                                     d2.get("url") or d2.get("output"))
-                    print(f"✅ Udio completado: {audio_url}")
+                if status in ("completed", "ok"):
+                    output = d2.get("output") or {}
+                    audio_url = (
+                        output.get("audio_file", {}).get("url") or
+                        output.get("audio", {}).get("url") or
+                        output.get("url") or
+                        d2.get("audio_url")
+                    )
+                    print(f"✅ FAL music completado: {audio_url}")
                     break
-
                 elif status in ("failed", "error", "cancelled"):
-                    err = d2.get("error") or d2.get("message") or status
-                    return "", f"❌ La generación falló: {err}", "error"
+                    err = d2.get("error") or d2.get("detail") or status
+                    return "", f"❌ La generación falló en FAL: {err}", "error"
 
             except Exception as e:
-                print(f"🎵 Udio polling error {attempt}: {e}")
+                print(f"🎵 FAL music polling error {attempt}: {e}")
                 continue
 
     if not audio_url:
-        return "", "❌ Timeout: la canción tardó más de 4 minutos. Intentá de nuevo.", "error"
+        return "", "❌ Timeout: la música tardó más de 3 minutos. Intentá de nuevo.", "error"
 
-    title = enhanced.get("title", "Canción")
-    tags = enhanced.get("tags", "")
-    lyrics_preview = enhanced.get("lyrics", "")[:200]
-    lyrics_note = f"\n\n**Letra:**\n_{lyrics_preview}..._" if lyrics_preview else ""
-    result_text = f"🎵 **{title}** · _{tags}_{lyrics_note}\n\n> 🎧 *Generada con Udio AI · Hacé clic en ▶️ para escuchar*"
-
-    return audio_url, result_text, "udio · música"
+    result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con FAL Stable Audio · Hacé clic en ▶️ para escuchar*"
+    return audio_url, result_text, "fal · stable-audio"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  DEEP SEARCH
