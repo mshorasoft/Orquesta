@@ -2169,54 +2169,89 @@ async def get_current_routes_content() -> str:
     return ""
 
 async def analyze_and_propose_improvements():
-    """Analiza errores recientes y propone mejoras — versión rápida sin GitHub."""
+    """
+    Analiza errores recientes y propone mejoras.
+    Cascada: Gemini → Groq → fallback garantizado.
+    Siempre envía email si hay errores para reportar.
+    """
     if not _error_log and not _feedback_log:
-        return
+        print("📋 Sin errores para analizar")
+        return None
 
-    recent_errors = _error_log[-10:]  # Solo últimos 10 para ser más rápido
-    error_summary = "\n".join([f"- {e['endpoint']}: {e['error'][:100]}" for e in recent_errors])
+    top_error = _error_log[-1] if _error_log else _feedback_log[-1] if _feedback_log else {"endpoint": "general", "error": "feedback de usuario"}
+    recent = _error_log[-5:]
+    errores_txt = "\n".join([f"- {e['endpoint']}: {e['error'][:80]}" for e in recent])
 
-    # Prompt MÍNIMO para no gastar tokens
-    top_error = _error_log[-1] if _error_log else {"endpoint": "general", "error": "mejora general"}
-    analysis_prompt = f'''Error: {top_error["endpoint"]}: {top_error["error"][:80]}
-Respondé SOLO con JSON: {{"type":"bug_fix","description":"fix en español","impact":"alto","code_summary":"cambio","old_code":"x","new_code":"y","safe_to_auto_apply":true}}'''  
+    # Prompt estricto — sin old_code/new_code inventados (causan fallos en apply)
+    prompt = f"""Analizá estos errores de Orquesta AI y describí la mejora más importante.
 
-    try:
-        # Timeout explícito para no colgarse (compatible Python 3.8+)
-        msgs = [{"role": "user", "content": analysis_prompt}]
-        # Llamar directamente a Groq sin fallback — evita modelos con límite bajo
-        result = await asyncio.wait_for(
-            call_groq(msgs, "llama-3.1-8b-instant"),
-            timeout=15.0
-        )
+Errores recientes:
+{errores_txt}
 
-        # Parsear JSON de forma robusta
-        clean = result.strip()
-        start = clean.find("{")
-        end = clean.rfind("}") + 1
-        if start < 0 or end <= start:
-            raise ValueError(f"No hay JSON válido en la respuesta: {clean[:100]}")
-        
-        proposal_data = json.loads(clean[start:end])
-        proposal_id = str(uuid.uuid4())[:8]
+Respondé ÚNICAMENTE con JSON válido (sin markdown, sin texto extra):
+{{"type":"bug_fix","description":"descripción clara del problema y solución en español","impact":"alto","code_summary":"qué archivo y función hay que revisar y por qué","old_code":"","new_code":"","safe_to_auto_apply":false}}"""
+
+    result_text = None
+
+    # 1. Gemini (más quota disponible)
+    if GEMINI_KEY:
+        try:
+            result_text = await asyncio.wait_for(call_gemini(prompt), timeout=15.0)
+            print("✅ analyze: Gemini OK")
+        except Exception as e:
+            print(f"⚠️ analyze Gemini: {e}")
+
+    # 2. Groq fallback
+    if not result_text and GROQ_KEY:
+        try:
+            msgs = [
+                {"role": "system", "content": "Respondés SOLO con JSON válido. Sin markdown."},
+                {"role": "user", "content": prompt}
+            ]
+            result_text = await asyncio.wait_for(
+                call_groq(msgs, "llama-3.1-8b-instant"), timeout=12.0
+            )
+            print("✅ analyze: Groq OK")
+        except Exception as e:
+            print(f"⚠️ analyze Groq: {e}")
+
+    # Parsear JSON
+    proposal_data = None
+    if result_text:
+        try:
+            clean = result_text.strip().replace("```json","").replace("```","").strip()
+            s, e2 = clean.find("{"), clean.rfind("}") + 1
+            if s >= 0 and e2 > s:
+                proposal_data = json.loads(clean[s:e2])
+        except Exception as e:
+            print(f"⚠️ analyze JSON parse: {e}")
+
+    # Construir propuesta — con datos de IA o fallback descriptivo
+    proposal_id = str(uuid.uuid4())[:8]
+    if proposal_data:
+        proposal = {"id": proposal_id, "ts": datetime.now(timezone.utc).isoformat(),
+                    "status": "pending", **proposal_data}
+    else:
+        # Fallback garantizado — siempre hay algo para enviar
         proposal = {
             "id": proposal_id,
             "ts": datetime.now(timezone.utc).isoformat(),
             "status": "pending",
-            **proposal_data
+            "type": "revision_manual",
+            "description": f"Error en {top_error['endpoint']}: {top_error['error'][:100]}",
+            "impact": "requiere revisión",
+            "code_summary": f"Revisar {top_error['endpoint']} — {top_error.get('context','sin contexto')}",
+            "old_code": "",
+            "new_code": "",
+            "safe_to_auto_apply": False,
         }
-        _pending_improvements[proposal_id] = proposal
-        print(f"✅ Mejora propuesta: {proposal_id} - {proposal_data.get('description','')}")
-        
-        # Enviar email en background sin bloquear
-        asyncio.create_task(send_improvement_email(proposal))
-        return proposal_id
 
-    except asyncio.TimeoutError:
-        print("⏱ analyze timeout — Groq tardó más de 20 segundos")
-    except Exception as e:
-        print(f"Auto-analyze error: {e}")
-    return None
+    _pending_improvements[proposal_id] = proposal
+    print(f"✅ Mejora propuesta: {proposal_id} — {proposal.get('description','')[:60]}")
+
+    # Enviar email siempre
+    asyncio.create_task(send_improvement_email(proposal))
+    return proposal_id
 
 
 # ── ENDPOINTS DEL SISTEMA DE AUTO-MEJORAMIENTO ────────────────────────────────
