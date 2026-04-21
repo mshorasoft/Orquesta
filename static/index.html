@@ -269,6 +269,20 @@ a{color:var(--em-mid);text-decoration:none}
 .video-topup-btn:disabled{opacity:.4;cursor:not-allowed}
 .video-confirm-cancel{padding:11px 16px;background:var(--surface2);color:var(--text2);border:1px solid var(--border2);border-radius:9px;font-family:var(--font-body);font-size:13px;cursor:pointer;transition:background .2s}
 .video-confirm-cancel:hover{background:var(--surface3)}
+
+/* ── REPRODUCTOR DE MÚSICA ───────────────────────────────── */
+.music-player{background:var(--surface2);border:1px solid rgba(29,158,117,.25);border-radius:14px;padding:14px 16px;margin-top:10px;display:flex;flex-direction:column;gap:10px}
+.music-player-top{display:flex;align-items:center;gap:12px}
+.music-play-btn{width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--em),var(--em-dark));border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:transform .15s;flex-shrink:0}
+.music-play-btn:hover{transform:scale(1.08)}
+.music-info{flex:1;min-width:0}
+.music-title{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.music-tags{font-size:11px;color:var(--text2);margin-top:2px}
+.music-download{color:var(--em);font-size:11px;text-decoration:none;flex-shrink:0;opacity:.8}
+.music-download:hover{opacity:1}
+.music-progress-bar{width:100%;height:3px;background:var(--border);border-radius:2px;cursor:pointer;position:relative}
+.music-progress-fill{height:100%;background:var(--em);border-radius:2px;width:0%;transition:width .2s linear}
+.music-time{display:flex;justify-content:space-between;font-size:10px;color:var(--text3);font-family:var(--font-mono)}
 </style>
 </head>
 <body>
@@ -1393,6 +1407,87 @@ async function showTopupModal() {
   } catch(e) { console.warn('video/balance:', e); }
   await showVideoConfirmModal(confirmData);
   setTimeout(updateDailyCounter, 1000);
+}
+
+
+// ══════════════════════════════════════════════════════════════
+//  REPRODUCTOR DE MÚSICA
+// ══════════════════════════════════════════════════════════════
+function createMusicPlayer(audioUrl, title, tags) {
+  const player = document.createElement('div');
+  player.className = 'music-player';
+
+  const audio = new Audio(audioUrl);
+  let playing = false;
+
+  const top = document.createElement('div');
+  top.className = 'music-player-top';
+
+  const playBtn = document.createElement('button');
+  playBtn.className = 'music-play-btn';
+  playBtn.textContent = '▶';
+  playBtn.addEventListener('click', () => {
+    if (playing) {
+      audio.pause();
+      playBtn.textContent = '▶';
+    } else {
+      audio.play();
+      playBtn.textContent = '⏸';
+    }
+    playing = !playing;
+  });
+
+  const info = document.createElement('div');
+  info.className = 'music-info';
+  info.innerHTML = `<div class="music-title">🎵 ${title || 'Canción generada'}</div>
+    <div class="music-tags">${tags || 'IA · Udio'}</div>`;
+
+  const dlLink = document.createElement('a');
+  dlLink.className = 'music-download';
+  dlLink.href = audioUrl;
+  dlLink.download = `${(title || 'orquesta_music').replace(/[^a-z0-9]/gi,'_')}.mp3`;
+  dlLink.textContent = '⬇️';
+  dlLink.title = 'Descargar MP3';
+
+  top.appendChild(playBtn);
+  top.appendChild(info);
+  top.appendChild(dlLink);
+
+  const progressBar = document.createElement('div');
+  progressBar.className = 'music-progress-bar';
+  const fill = document.createElement('div');
+  fill.className = 'music-progress-fill';
+  progressBar.appendChild(fill);
+  progressBar.addEventListener('click', (e) => {
+    const rect = progressBar.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    if (audio.duration) audio.currentTime = pct * audio.duration;
+  });
+
+  const timeRow = document.createElement('div');
+  timeRow.className = 'music-time';
+  timeRow.innerHTML = '<span id="mtime-cur">0:00</span><span id="mtime-dur">--:--</span>';
+
+  const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+  audio.addEventListener('timeupdate', () => {
+    if (audio.duration) {
+      fill.style.width = (audio.currentTime / audio.duration * 100) + '%';
+      timeRow.querySelector('#mtime-cur').textContent = fmt(audio.currentTime);
+    }
+  });
+  audio.addEventListener('loadedmetadata', () => {
+    timeRow.querySelector('#mtime-dur').textContent = fmt(audio.duration);
+  });
+  audio.addEventListener('ended', () => {
+    playing = false;
+    playBtn.textContent = '▶';
+    fill.style.width = '0%';
+  });
+
+  player.appendChild(top);
+  player.appendChild(progressBar);
+  player.appendChild(timeRow);
+  return player;
 }
 
 async function send(){
