@@ -429,6 +429,11 @@ SOUND_KW = [
     "genera un sonido","generá un sonido","crea un sonido","crear un sonido",
     "genera audio","generá audio","crea audio","música","musica","sound effect",
     "efecto de sonido","beat","melodía","melodia","generate sound","create sound",
+    "generá una canción","genera una cancion","genera una canción","crea una canción",
+    "componé una canción","componé una cancion","haceme una canción","haceme una cancion",
+    "canción sobre","cancion sobre","song about","make a song","create a song",
+    "generate music","generate a song","música de","musica de","tema musical",
+    "cumbia","reggaeton","rock","jazz","pop","balada","rap","trap","folklore",
 ]
 
 def detect_file_type(prompt):
@@ -1086,6 +1091,129 @@ STRICT RULES:
     )
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  GENERACIÓN DE MÚSICA — udioapi.pro (Suno + Udio)
+# ─────────────────────────────────────────────────────────────────────────────
+
+UDIO_API_KEY = os.getenv("UDIO_API_KEY", "")
+
+async def generate_music_smart(prompt: str, username: str = "") -> tuple[str, str, str]:
+    """
+    Genera una canción completa usando udioapi.pro.
+    Retorna: (audio_url, result_text, label)
+    """
+    if not UDIO_API_KEY:
+        return "", "❌ `UDIO_API_KEY` no configurada en Railway. Pedile al admin que la active.", "error"
+
+    # Enriquecer el prompt con Groq para mejor resultado musical
+    async def enhance_music_prompt(p: str) -> dict:
+        try:
+            msgs = [
+                {"role": "system", "content": """Sos un productor musical experto.
+Dado el pedido del usuario, generá:
+1. Un prompt en inglés para generar la canción (descriptivo, con género, mood, instrumentos, estilo)
+2. Una letra en español coherente con el pedido (2 estrofas + coro, máximo 150 palabras)
+3. Tags de género (ej: "cumbia, tropical, festivo, guitarra, acordeón")
+
+Respondé SOLO con JSON:
+{"prompt_en": "...", "lyrics": "...", "tags": "...", "title": "..."}"""},
+                {"role": "user", "content": f"Pedido: {p}"}
+            ]
+            result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
+            clean = result.strip().replace("```json","").replace("```","").strip()
+            s, e = clean.find("{"), clean.rfind("}") + 1
+            if s >= 0 and e > s:
+                return json.loads(clean[s:e])
+        except Exception as ex:
+            print(f"music enhance error: {ex}")
+        return {"prompt_en": p, "lyrics": "", "tags": "music", "title": "Mi Canción"}
+
+    enhanced = await enhance_music_prompt(prompt)
+    print(f"🎵 Generando música: {enhanced.get('title','?')} | tags: {enhanced.get('tags','')}")
+
+    # Llamar a udioapi.pro
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post(
+                "https://udioapi.pro/api/generate",
+                headers={
+                    "Authorization": f"Bearer {UDIO_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "prompt": enhanced.get("prompt_en", prompt)[:300],
+                    "lyrics": enhanced.get("lyrics", "")[:500],
+                    "tags": enhanced.get("tags", "music"),
+                    "title": enhanced.get("title", "Canción Orquesta"),
+                    "make_instrumental": not bool(enhanced.get("lyrics")),
+                }
+            )
+            d = r.json()
+            print(f"🎵 Udio submit: {r.status_code} | {str(d)[:200]}")
+
+            if not r.is_success:
+                err = d.get("message") or d.get("error") or f"HTTP {r.status_code}"
+                return "", f"❌ Error al generar la música: {err}", "error"
+
+            # Obtener task_id para polling
+            task_id = d.get("taskId") or d.get("task_id") or d.get("id")
+            if not task_id:
+                # Algunos endpoints devuelven la URL directo
+                audio_url = d.get("audioUrl") or d.get("audio_url") or d.get("url")
+                if audio_url:
+                    title = enhanced.get("title", "Canción")
+                    return audio_url, f"🎵 **{title}** generada con IA", "udio · música"
+                return "", "❌ Udio no devolvió task_id ni URL. Intentá de nuevo.", "error"
+
+    except Exception as e:
+        print(f"🎵 Udio submit error: {e}")
+        return "", f"❌ Error de conexión con Udio: {str(e)[:100]}", "error"
+
+    # Polling hasta que la canción esté lista (máx 4 minutos)
+    audio_url = None
+    async with httpx.AsyncClient(timeout=300) as c:
+        for attempt in range(24):  # 24 × 10s = 4 min
+            await asyncio.sleep(10)
+            try:
+                r2 = await c.get(
+                    f"https://udioapi.pro/api/task/{task_id}",
+                    headers={"Authorization": f"Bearer {UDIO_API_KEY}"}
+                )
+                d2 = r2.json()
+                status = d2.get("status", "").lower()
+                print(f"🎵 Udio polling {attempt+1}/24: {status}")
+
+                if status in ("completed", "success", "done"):
+                    # Intentar extraer URL de distintas estructuras
+                    songs = d2.get("songs") or d2.get("tracks") or d2.get("results") or []
+                    if songs and isinstance(songs, list):
+                        audio_url = songs[0].get("audioUrl") or songs[0].get("audio_url") or songs[0].get("url")
+                    if not audio_url:
+                        audio_url = (d2.get("audioUrl") or d2.get("audio_url") or
+                                     d2.get("url") or d2.get("output"))
+                    print(f"✅ Udio completado: {audio_url}")
+                    break
+
+                elif status in ("failed", "error", "cancelled"):
+                    err = d2.get("error") or d2.get("message") or status
+                    return "", f"❌ La generación falló: {err}", "error"
+
+            except Exception as e:
+                print(f"🎵 Udio polling error {attempt}: {e}")
+                continue
+
+    if not audio_url:
+        return "", "❌ Timeout: la canción tardó más de 4 minutos. Intentá de nuevo.", "error"
+
+    title = enhanced.get("title", "Canción")
+    tags = enhanced.get("tags", "")
+    lyrics_preview = enhanced.get("lyrics", "")[:200]
+    lyrics_note = f"\n\n**Letra:**\n_{lyrics_preview}..._" if lyrics_preview else ""
+    result_text = f"🎵 **{title}** · _{tags}_{lyrics_note}\n\n> 🎧 *Generada con Udio AI · Hacé clic en ▶️ para escuchar*"
+
+    return audio_url, result_text, "udio · música"
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  DEEP SEARCH
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1205,9 +1333,10 @@ class OrchestrateResp(BaseModel):
     file_name: str = ""
     tts_url: str = ""
     video_url: str = ""
+    music_url: str = ""         # URL directa de audio generado
     is_pro: bool = False
     daily_remaining: int = -1
-    video_credits_remaining: int = -1   # -1 = no aplica
+    video_credits_remaining: int = -1
     upgrade_banner: str = ""
     upgrade_cta: str = ""
     upgrade_cta_url: str = ""
@@ -1381,9 +1510,18 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
                 result, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
 
         elif task == "sound_gen":
-            result = ("🎵 La generación de audio/música requiere créditos en APIs especializadas.\n\n"
-                      "Configurá `ELEVENLABS_API_KEY` en Railway para activar esta función.")
-            label = "orquesta · sound"
+            music_url, result, label = await generate_music_smart(req.prompt, username)
+            if music_url:
+                # Guardar en caché para descarga
+                import urllib.request as _ur
+                try:
+                    audio_resp = _ur.urlopen(music_url, timeout=30)
+                    audio_bytes = audio_resp.read()
+                    audio_token = cache_file(audio_bytes, "orquesta_music.mp3", "audio/mpeg")
+                    tts_url = f"/api/download/{audio_token}"
+                except Exception as _me:
+                    print(f"Music cache error: {_me}")
+                    tts_url = music_url  # usar URL directa si falla el cache
 
         elif task == "translate":
             ts = system + "\n\nEres un traductor experto. Traducí con precisión y naturalidad."
@@ -1468,11 +1606,16 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
         except Exception:
             pass
 
+    # music_url: si sound_gen tuvo éxito, está en tts_url (caché local)
+    # Si falló el caché, music_url tiene la URL directa
+    _music_url = music_url if task == "sound_gen" and "music_url" in dir() else ""
+
     return OrchestrateResp(
         result=result, task_type=task, model_label=label,
         latency_ms=int((time.time()-t0)*1000),
         image_url=img_url, file_url=file_url, file_type=file_type,
         file_name=file_name, tts_url=tts_url, video_url=video_url,
+        music_url=_music_url,
         is_pro=is_pro,
         daily_remaining=daily_remaining,
         video_credits_remaining=video_credits_remaining,
