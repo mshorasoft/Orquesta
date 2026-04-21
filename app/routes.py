@@ -426,15 +426,39 @@ FILE_GEN_KW = {
 }
 CV_KW = ["curriculum","currículum","cv ","resume","hoja de vida"]
 SOUND_KW = [
-    "genera un sonido","generá un sonido","crea un sonido","crear un sonido",
-    "genera audio","generá audio","crea audio","música","musica","sound effect",
-    "efecto de sonido","beat","melodía","melodia","generate sound","create sound",
+    # Pedidos explícitos de música/canción — muy específicos primero
     "generá una canción","genera una cancion","genera una canción","crea una canción",
     "componé una canción","componé una cancion","haceme una canción","haceme una cancion",
+    "generame una cancion","generame una canción","generame un tema",
     "canción sobre","cancion sobre","song about","make a song","create a song",
     "generate music","generate a song","música de","musica de","tema musical",
-    "cumbia","reggaeton","rock","jazz","pop","balada","rap","trap","folklore",
+    "compone una cancion","compone una canción","componer una canción",
+    # Géneros musicales con verbo de generación (detección combinada abajo)
+    "una cumbia","una balada","un reggaeton","un rock","un jazz","un rap","un trap",
+    "un folklore","una chacarera","un tango","un vals","una milonga",
+    # Audio genérico
+    "genera un sonido","generá un sonido","crea un sonido",
+    "genera audio","generá audio","crea audio","sound effect",
+    "efecto de sonido","beat","melodía","melodia","generate sound","create sound",
 ]
+
+# Géneros solos — solo cuentan si van con un verbo de generación
+MUSIC_GENRES = ["cumbia","reggaeton","salsa","bachata","folklore","chacarera","tango",
+                "balada","bolero","trap","rap","jazz","blues","rock","pop","metal"]
+
+def is_music_request(prompt: str) -> bool:
+    p = prompt.lower()
+    if any(k in p for k in SOUND_KW):
+        return True
+    # Género + verbo de generación
+    gen_verbs = ["genera","generá","crea","creá","hacé","haceme","generame",
+                 "componé","compone","quiero","dame","fagas","hagas"]
+    has_verb = any(v in p for v in gen_verbs)
+    has_genre = any(g in p for g in MUSIC_GENRES)
+    # También "canción" o "tema" o "song" + verbo
+    has_song_word = any(w in p for w in ["canción","cancion","tema","song","música","musica"])
+    return has_verb and (has_genre or has_song_word)
+
 
 def detect_file_type(prompt):
     p = prompt.lower()
@@ -507,8 +531,8 @@ def classify(prompt, mode, history=None):
         has_video_intent = True
 
     if has_video_intent: return "video_gen"
+    if is_music_request(p): return "sound_gen"   # música ANTES que imagen
     if any(k in p for k in IMAGE_GEN_KW): return "image_gen"
-    if any(k in p for k in SOUND_KW): return "sound_gen"
     if any(k in p for k in TRANSLATE_KW): return "translate"
     if " vs " in p or " contra " in p: return "realtime"
     if any(x in p for x in ["cómo salió","como salio","cómo quedó","qué pasó","que paso"]): return "realtime"
