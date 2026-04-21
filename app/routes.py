@@ -2004,56 +2004,118 @@ def log_error(endpoint: str, error: str, context: str = ""):
         _error_log.pop(0)
 
 async def send_improvement_email(proposal: dict) -> bool:
-    """Envía email al dueño con la propuesta de mejora."""
-    SENDGRID_KEY = os.getenv("SENDGRID_API_KEY", "")
+    """
+    Envía email al dueño con la propuesta de mejora.
+    Cascada: Resend → SendGrid → Gmail SMTP → log en consola
+    """
+    RESEND_KEY    = os.getenv("RESEND_API_KEY", "")
+    SENDGRID_KEY  = os.getenv("SENDGRID_API_KEY", "")
+    GMAIL_PASS    = os.getenv("GMAIL_APP_PASSWORD", "")   # contraseña de app de Gmail
     
     approve_url = f"{APP_URL}/api/self-improve/approve/{proposal['id']}"
     reject_url  = f"{APP_URL}/api/self-improve/reject/{proposal['id']}"
     
-    html_body = f"""
-    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;background:#0d0f0d;color:#e3e8e4;padding:2rem;border-radius:12px;">
-      <h2 style="color:#1D9E75;">🤖 Orquesta detectó una mejora</h2>
-      <p><strong>Tipo:</strong> {proposal['type']}</p>
-      <p><strong>Descripción:</strong> {proposal['description']}</p>
-      <p><strong>Impacto estimado:</strong> {proposal['impact']}</p>
-      <p><strong>Cambio propuesto:</strong></p>
-      <pre style="background:#1c1e1b;padding:1rem;border-radius:8px;overflow-x:auto;font-size:12px;">{proposal['code_summary']}</pre>
-      <div style="margin-top:2rem;display:flex;gap:1rem;">
-        <a href="{approve_url}" style="background:#1D9E75;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">✅ Aprobar cambio</a>
-        <a href="{reject_url}" style="background:#c0392b;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">❌ Rechazar</a>
-      </div>
-      <p style="color:#3d4e3e;font-size:12px;margin-top:1.5rem;">Orquesta AI · Sistema de auto-mejoramiento</p>
-    </div>
-    """
-    
-    print(f"📧 Enviando email a {OWNER_EMAIL}...")
-    print(f"   SendGrid key: {'✅ configurada' if SENDGRID_KEY else '❌ NO configurada'}")
-    
-    if SENDGRID_KEY:
+    html_body = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family:sans-serif;background:#f5f5f5;padding:20px;">
+<div style="max-width:600px;margin:0 auto;background:white;border-radius:12px;padding:30px;border:1px solid #e0e0e0;">
+  <h2 style="color:#1D9E75;margin-top:0;">🤖 Orquesta detectó una mejora</h2>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+    <tr><td style="padding:8px;color:#666;width:120px;">Tipo</td><td style="padding:8px;font-weight:600;">{proposal.get('type','')}</td></tr>
+    <tr style="background:#f9f9f9;"><td style="padding:8px;color:#666;">Descripción</td><td style="padding:8px;">{proposal.get('description','')}</td></tr>
+    <tr><td style="padding:8px;color:#666;">Impacto</td><td style="padding:8px;">{proposal.get('impact','')}</td></tr>
+  </table>
+  <div style="background:#1c1e1b;padding:15px;border-radius:8px;margin-bottom:20px;">
+    <code style="color:#1D9E75;font-size:13px;white-space:pre-wrap;">{proposal.get('code_summary','')[:500]}</code>
+  </div>
+  <div style="display:flex;gap:12px;">
+    <a href="{approve_url}" style="background:#1D9E75;color:white;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">✅ Aprobar</a>
+    <a href="{reject_url}" style="background:#c0392b;color:white;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">❌ Rechazar</a>
+  </div>
+  <p style="color:#999;font-size:12px;margin-top:20px;">Orquesta AI · Auto-mejoramiento · ID: {proposal['id']}</p>
+</div>
+</body></html>"""
+
+    subject = f"🤖 Orquesta: {proposal.get('description','mejora detectada')[:60]}"
+    print(f"📧 Enviando notificación de mejora {proposal['id']} a {OWNER_EMAIL}...")
+
+    # ── 1. Resend (el más confiable, funciona con cualquier email) ─────────────
+    if RESEND_KEY:
         try:
-            async with httpx.AsyncClient(timeout=20) as c:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.post(
+                    "https://api.resend.com/emails",
+                    headers={"Authorization": f"Bearer {RESEND_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "from": "Orquesta AI <onboarding@resend.dev>",
+                        "to": [OWNER_EMAIL],
+                        "subject": subject,
+                        "html": html_body,
+                    }
+                )
+                print(f"📧 Resend: {r.status_code} | {r.text[:150]}")
+                if r.is_success:
+                    print(f"✅ Email enviado via Resend a {OWNER_EMAIL}")
+                    return True
+                else:
+                    print(f"⚠️ Resend falló ({r.status_code}), probando SendGrid...")
+        except Exception as e:
+            print(f"⚠️ Resend exception: {e}, probando SendGrid...")
+
+    # ── 2. SendGrid (con sender dinámico — usa el OWNER_EMAIL como from) ───────
+    if SENDGRID_KEY:
+        # SendGrid permite usar cualquier email si está en "Single Sender Verification"
+        # o si el dominio está verificado. Usamos noreply@ como fallback seguro.
+        sender_email = os.getenv("SENDGRID_FROM_EMAIL", OWNER_EMAIL)
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
                 r = await c.post(
                     "https://api.sendgrid.com/v3/mail/send",
                     headers={"Authorization": f"Bearer {SENDGRID_KEY}", "Content-Type": "application/json"},
                     json={
                         "personalizations": [{"to": [{"email": OWNER_EMAIL}]}],
-                        "from": {"email": "ms.horasoft@gmail.com", "name": "Orquesta AI"},
-                        "subject": f"🤖 Orquesta propone mejora: {proposal.get('type','mejora')}",
+                        "from": {"email": sender_email, "name": "Orquesta AI"},
+                        "subject": subject,
                         "content": [{"type": "text/html", "value": html_body}]
                     }
                 )
-                print(f"📧 SendGrid respuesta: {r.status_code} | {r.text[:200]}")
+                print(f"📧 SendGrid: {r.status_code} | {r.text[:150]}")
                 if r.is_success:
-                    print(f"✅ Email enviado a {OWNER_EMAIL}")
+                    print(f"✅ Email enviado via SendGrid a {OWNER_EMAIL}")
                     return True
                 else:
-                    print(f"❌ SendGrid error: {r.status_code} - {r.text[:300]}")
+                    print(f"⚠️ SendGrid falló: {r.status_code} - {r.text[:200]}")
         except Exception as e:
-            print(f"❌ Email exception: {e}")
-    else:
-        print("❌ SENDGRID_API_KEY no configurada en Railway")
-    
-    print(f"📋 MEJORA PENDIENTE (sin email): {proposal['id']} - {proposal.get('description','')}")
+            print(f"⚠️ SendGrid exception: {e}")
+
+    # ── 3. Gmail SMTP directo (con App Password) ───────────────────────────────
+    if GMAIL_PASS:
+        try:
+            import smtplib
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"]    = OWNER_EMAIL
+            msg["To"]      = OWNER_EMAIL
+            msg.attach(MIMEText(html_body, "html"))
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+                smtp.login(OWNER_EMAIL, GMAIL_PASS)
+                smtp.sendmail(OWNER_EMAIL, OWNER_EMAIL, msg.as_string())
+            print(f"✅ Email enviado via Gmail SMTP a {OWNER_EMAIL}")
+            return True
+        except Exception as e:
+            print(f"⚠️ Gmail SMTP exception: {e}")
+
+    # ── 4. Fallback: solo log en consola (siempre funciona) ────────────────────
+    print(f"""
+╔══════════════════════════════════════════════════════════╗
+║  🤖 MEJORA PENDIENTE — {proposal['id']}
+║  Tipo: {proposal.get('type','')}
+║  Descripción: {proposal.get('description','')[:60]}
+║  Aprobar: {approve_url}
+║  Rechazar: {reject_url}
+╚══════════════════════════════════════════════════════════╝""")
     return False
 
 async def apply_github_change(filename: str, new_content: str, commit_msg: str) -> bool:
