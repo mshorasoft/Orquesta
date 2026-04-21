@@ -1246,81 +1246,140 @@ Respondé SOLO con JSON:
             udio_skip_reason = f"Error de conexión: {str(e)[:80]}"
             print(f"🎵 Udio error: {e}")
 
-    print(f"🎵 Udio no disponible ({udio_skip_reason}), usando FAL.ai Stable Audio como fallback...")
+    print(f"🎵 Udio no disponible ({udio_skip_reason}), intentando FAL.ai Stable Audio...")
 
     # ════════════════════════════════════════════════════════════════════════
     #  OPCIÓN 2: FAL.ai Stable Audio (fallback)
     # ════════════════════════════════════════════════════════════════════════
     FAL_KEY = os.getenv("FAL_API_KEY", "")
+    fal_skip_reason = None
+
     if not FAL_KEY:
-        return "", "❌ No se pudo generar música: Udio sin créditos y FAL_API_KEY no configurada. Contactá al admin.", "error"
+        fal_skip_reason = "FAL_API_KEY no configurada"
+    else:
+        fal_audio_url = None
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    "https://queue.fal.run/fal-ai/stable-audio",
+                    headers={
+                        "Authorization": f"Key {FAL_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "prompt": music_prompt_en[:500],
+                        "seconds_total": 30,
+                        "steps": 100,
+                    }
+                )
+                d = r.json()
+                print(f"🎵 FAL music submit: {r.status_code} | {str(d)[:200]}")
 
+                # Detectar saldo agotado u otros errores bloqueantes
+                err_msg = (d.get("message") or d.get("detail") or "").lower()
+                if not r.is_success or any(k in err_msg for k in ["locked", "exhausted", "balance", "quota", "limit", "billing"]):
+                    fal_skip_reason = f"FAL sin saldo ({err_msg[:80]})"
+                else:
+                    request_id = d.get("request_id")
+                    if not request_id:
+                        fal_skip_reason = "FAL no devolvió request_id"
+                    else:
+                        # Polling FAL (máx 3 min)
+                        async with httpx.AsyncClient(timeout=300) as c2:
+                            for attempt in range(18):
+                                await asyncio.sleep(10)
+                                try:
+                                    r2 = await c2.get(
+                                        f"https://queue.fal.run/fal-ai/stable-audio/requests/{request_id}",
+                                        headers={"Authorization": f"Key {FAL_KEY}"}
+                                    )
+                                    d2 = r2.json()
+                                    status = d2.get("status", "").lower()
+                                    print(f"🎵 FAL music polling {attempt+1}/18: {status}")
+
+                                    if status in ("completed", "ok"):
+                                        output = d2.get("output") or {}
+                                        fal_audio_url = (
+                                            output.get("audio_file", {}).get("url") or
+                                            output.get("audio", {}).get("url") or
+                                            output.get("url") or
+                                            d2.get("audio_url")
+                                        )
+                                        print(f"✅ FAL music completado: {fal_audio_url}")
+                                        break
+                                    elif status in ("failed", "error", "cancelled"):
+                                        fal_skip_reason = d2.get("error") or d2.get("detail") or status
+                                        break
+                                except Exception as pe:
+                                    print(f"🎵 FAL polling error {attempt}: {pe}")
+                                    continue
+
+                        if fal_audio_url:
+                            result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con FAL Stable Audio · Hacé clic en ▶️ para escuchar*"
+                            return fal_audio_url, result_text, "fal · stable-audio"
+                        elif not fal_skip_reason:
+                            fal_skip_reason = "Timeout o sin URL en respuesta"
+
+        except Exception as e:
+            fal_skip_reason = f"Error de conexión: {str(e)[:80]}"
+            print(f"🎵 FAL music error: {e}")
+
+    print(f"🎵 FAL no disponible ({fal_skip_reason}), usando Pollinations Music (gratuito)...")
+
+    # ════════════════════════════════════════════════════════════════════════
+    #  OPCIÓN 3: Pollinations Music (siempre disponible, 100% gratuito)
+    # ════════════════════════════════════════════════════════════════════════
     try:
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.post(
-                "https://queue.fal.run/fal-ai/stable-audio",
-                headers={
-                    "Authorization": f"Key {FAL_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "prompt": music_prompt_en[:500],
-                    "seconds_total": 30,
-                    "steps": 100,
-                }
-            )
-            d = r.json()
-            print(f"🎵 FAL music submit: {r.status_code} | {str(d)[:200]}")
+        import urllib.parse as _urlparse
+        # Pollinations Music genera audio a partir de un prompt de texto
+        # Endpoint: https://text.pollinations.ai/  con model=musicgen
+        poll_prompt = f"{music_prompt_en[:200]}, {tags}"
+        encoded = _urlparse.quote(poll_prompt)
+        # URL directa — Pollinations devuelve el audio directamente (no requiere polling)
+        audio_url = f"https://audio.pollinations.ai/{encoded}"
 
-            if not r.is_success:
-                err = d.get("message") or d.get("detail") or f"HTTP {r.status_code}"
-                return "", f"❌ Error al generar la música: {err}", "error"
+        # Verificar que el endpoint responde con un HEAD request
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            try:
+                rh = await c.head(audio_url)
+                content_type = rh.headers.get("content-type", "")
+                print(f"🎵 Pollinations music HEAD: {rh.status_code} | {content_type}")
+                # Si responde OK con audio, retornar directamente
+                if rh.is_success and ("audio" in content_type or "mpeg" in content_type or "wav" in content_type):
+                    result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con Pollinations Music · Hacé clic en ▶️ para escuchar*"
+                    return audio_url, result_text, "pollinations · music"
+            except Exception:
+                pass
 
-            request_id = d.get("request_id")
-            if not request_id:
-                return "", "❌ FAL no devolvió request_id. Intentá de nuevo.", "error"
+            # Fallback: intentar GET y ver si viene audio
+            try:
+                rg = await c.get(audio_url, timeout=30)
+                content_type = rg.headers.get("content-type", "")
+                print(f"🎵 Pollinations music GET: {rg.status_code} | {content_type} | {len(rg.content)} bytes")
+                if rg.is_success and len(rg.content) > 5000:
+                    # Guardar en caché local para servir
+                    import uuid as _uuid
+                    tok = str(_uuid.uuid4())
+                    _file_cache[tok] = (rg.content, "orquesta_music.mp3", "audio/mpeg")
+                    cached_url = f"/api/download/{tok}"
+                    result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con Pollinations Music · Hacé clic en ▶️ para escuchar*"
+                    return cached_url, result_text, "pollinations · music"
+            except Exception as ge:
+                print(f"🎵 Pollinations GET error: {ge}")
 
     except Exception as e:
-        print(f"🎵 FAL music submit error: {e}")
-        return "", f"❌ Error de conexión con FAL: {str(e)[:100]}", "error"
+        print(f"🎵 Pollinations music error: {e}")
 
-    # Polling FAL (máx 3 min)
-    audio_url = None
-    async with httpx.AsyncClient(timeout=300) as c:
-        for attempt in range(18):  # 18 × 10s = 3 min
-            await asyncio.sleep(10)
-            try:
-                r2 = await c.get(
-                    f"https://queue.fal.run/fal-ai/stable-audio/requests/{request_id}",
-                    headers={"Authorization": f"Key {FAL_KEY}"}
-                )
-                d2 = r2.json()
-                status = d2.get("status", "").lower()
-                print(f"🎵 FAL music polling {attempt+1}/18: {status}")
-
-                if status in ("completed", "ok"):
-                    output = d2.get("output") or {}
-                    audio_url = (
-                        output.get("audio_file", {}).get("url") or
-                        output.get("audio", {}).get("url") or
-                        output.get("url") or
-                        d2.get("audio_url")
-                    )
-                    print(f"✅ FAL music completado: {audio_url}")
-                    break
-                elif status in ("failed", "error", "cancelled"):
-                    err = d2.get("error") or d2.get("detail") or status
-                    return "", f"❌ La generación falló en FAL: {err}", "error"
-
-            except Exception as e:
-                print(f"🎵 FAL music polling error {attempt}: {e}")
-                continue
-
-    if not audio_url:
-        return "", "❌ Timeout: la música tardó más de 3 minutos. Intentá de nuevo.", "error"
-
-    result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con FAL Stable Audio · Hacé clic en ▶️ para escuchar*"
-    return audio_url, result_text, "fal · stable-audio"
+    # Si los 3 fallaron, mensaje claro al usuario
+    return (
+        "",
+        f"❌ No pude generar la música ahora mismo:\n"
+        f"- Udio: {udio_skip_reason}\n"
+        f"- FAL: {fal_skip_reason}\n"
+        f"- Pollinations: no disponible\n\n"
+        f"Recargá saldo en [fal.ai/dashboard/billing](https://fal.ai/dashboard/billing) o intentá de nuevo en unos minutos.",
+        "error"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  DEEP SEARCH
