@@ -2185,8 +2185,8 @@ Respondé SOLO con JSON: {{"type":"bug_fix","description":"fix en español","imp
         # Timeout explícito para no colgarse (compatible Python 3.8+)
         msgs = [{"role": "user", "content": analysis_prompt}]
         # Llamar directamente a Groq sin fallback — evita modelos con límite bajo
-        result, _ = await asyncio.wait_for(
-            call_groq(msgs, "llama-3.3-70b-versatile"),
+        result = await asyncio.wait_for(
+            call_groq(msgs, "llama-3.1-8b-instant"),
             timeout=15.0
         )
 
@@ -2345,29 +2345,82 @@ async def trigger_analysis_get():
         log_error("/api/stt", "OpenAI quota exceeded", "stt")
         log_error("/api/orchestrate", "video_gen no credits", "video")
 
-    # Hacer el análisis directamente con timeout corto
-    top_err = _error_log[-1] if _error_log else {"endpoint":"api","error":"mejora general"}
-    prompt = f'''Error: {top_err["endpoint"]}: {top_err["error"][:60]}
-JSON: {{"type":"bug_fix","description":"mejora","impact":"alto","code_summary":"fix","old_code":"x","new_code":"y","safe_to_auto_apply":true}}'''  
+    # Analizar errores — usar Gemini primero (más tokens disponibles), Groq como fallback
+    top_err = _error_log[-1] if _error_log else {"endpoint": "api/general", "error": "mejora de rendimiento general"}
 
-    try:
-        msgs = [{"role":"user","content":prompt}]
-        result, _ = await asyncio.wait_for(
-            call_groq(msgs, "llama-3.3-70b-versatile"),
-            timeout=12.0
-        )
-        clean = result.strip()
-        s, e2 = clean.find("{"), clean.rfind("}") + 1
-        if s >= 0 and e2 > s:
-            pdata = json.loads(clean[s:e2])
-            pid = str(uuid.uuid4())[:8]
-            _pending_improvements[pid] = {"id":pid,"ts":datetime.now(timezone.utc).isoformat(),"status":"pending",**pdata}
-            asyncio.create_task(send_improvement_email(_pending_improvements[pid]))
-            print(f"✅ Mejora: {pid} - {pdata.get('description','')}")
-    except asyncio.TimeoutError:
-        print("⏱ Trigger timeout")
-    except Exception as ex:
-        print(f"Trigger error: {ex}")
+    prompt_texto = f"""Sos un analizador de errores de software. 
+Error en Orquesta AI — Endpoint: {top_err["endpoint"]} — Error: {top_err["error"][:100]}
+
+Respondé ÚNICAMENTE con este JSON (sin markdown, sin texto extra):
+{{"type":"bug_fix","description":"descripción del fix en español","impact":"alto","code_summary":"qué cambiaría","old_code":"","new_code":"","safe_to_auto_apply":false}}"""
+
+    proposal = None
+    result_text = None
+
+    # Intentar Gemini primero (quota diaria más alta)
+    if GEMINI_KEY and not result_text:
+        try:
+            result_text = await asyncio.wait_for(
+                call_gemini(prompt_texto),
+                timeout=15.0
+            )
+            print(f"✅ Análisis via Gemini OK")
+        except Exception as ex:
+            print(f"⚠️ Gemini falló: {ex}")
+            result_text = None
+
+    # Fallback: Groq con modelo pequeño
+    if not result_text and GROQ_KEY:
+        try:
+            msgs = [
+                {"role": "system", "content": "Respondés ÚNICAMENTE con JSON válido. Sin markdown."},
+                {"role": "user", "content": prompt_texto}
+            ]
+            result_text = await asyncio.wait_for(
+                call_groq(msgs, "llama-3.1-8b-instant"),
+                timeout=12.0
+            )
+            print(f"✅ Análisis via Groq OK")
+        except Exception as ex:
+            print(f"⚠️ Groq falló: {ex}")
+            result_text = None
+
+    # Parsear JSON si tenemos respuesta
+    if result_text:
+        try:
+            clean = result_text.strip().replace("```json", "").replace("```", "").strip()
+            s = clean.find("{")
+            e2 = clean.rfind("}") + 1
+            if s >= 0 and e2 > s:
+                pdata = json.loads(clean[s:e2])
+                pid = str(uuid.uuid4())[:8]
+                proposal = {"id": pid, "ts": datetime.now(timezone.utc).isoformat(), "status": "pending", **pdata}
+                _pending_improvements[pid] = proposal
+                print(f"✅ Mejora generada: {pid} - {pdata.get('description', '')}")
+        except Exception as ex:
+            print(f"⚠️ Error parseando JSON: {ex} — usando fallback")
+
+    # Fallback garantizado — siempre hay propuesta para probar el email
+    if not proposal:
+        pid = str(uuid.uuid4())[:8]
+        proposal = {
+            "id": pid,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+            "type": "revision_manual",
+            "description": f"Error frecuente en {top_err['endpoint']}: {top_err['error'][:80]}",
+            "impact": "medio",
+            "code_summary": "Revisar manualmente este endpoint. El análisis automático no pudo completarse.",
+            "old_code": "",
+            "new_code": "",
+            "safe_to_auto_apply": False,
+        }
+        _pending_improvements[pid] = proposal
+        print(f"📋 Propuesta fallback creada: {pid}")
+
+    # Enviar email — siempre, pase lo que pase arriba
+    email_sent = await send_improvement_email(proposal)
+    print(f"📧 Email {'✅ enviado' if email_sent else '❌ no enviado — revisar RESEND_API_KEY o SENDGRID_API_KEY'}")
 
     pending = list(_pending_improvements.values())
     items = "".join([
@@ -2393,10 +2446,10 @@ JSON: {{"type":"bug_fix","description":"mejora","impact":"alto","code_summary":"
       <span class="stat">💡 Mejoras pendientes: <strong>{len(pending)}</strong></span>
     </div>
     <p style="color:#aaa;font-size:13px;margin-top:1rem;">
-      ⏳ Analizando errores con IA... La página se actualiza sola en 8 segundos.<br>
-      📧 Si hay mejoras, recibirás email en ms.horasoft@gmail.com.
+      📧 Email {'✅ enviado' if email_sent else '❌ no enviado — revisar logs de Railway'} a {OWNER_EMAIL}<br>
+      🔄 La página se actualiza sola en 8 segundos.
     </p>
-    {"<h3 style='color:#1D9E75;margin-top:1.5rem;'>💡 Mejoras detectadas</h3><ul style='padding:0;list-style:none;'>" + items + "</ul>" if pending else "<p style='color:#555;margin-top:1rem;'>Analizando... refrescá la página en unos segundos.</p>"}
+    {"<h3 style='color:#1D9E75;margin-top:1.5rem;'>💡 Mejoras detectadas</h3><ul style='padding:0;list-style:none;'>" + items + "</ul>" if pending else ""}
     <br><a href="/api/self-improve/pending">Ver JSON →</a> · 
     <a href="/">Volver a Orquesta</a>
     </body></html>""")
