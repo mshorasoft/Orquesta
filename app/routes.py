@@ -2167,10 +2167,42 @@ async def upload_file(
         is_edit = is_image and any(k in prompt.lower() for k in IMAGE_EDIT_KW)
 
         if is_image and is_edit:
+            # Flujo 1: OpenAI (GPT-4o + DALL-E 3)
             if OPENAI_KEY:
-                try: img_url = await call_openai_image_edit(raw, prompt); result = "Imagen editada con GPT-4o + DALL-E 3."; label = "gpt-4o + dall-e-3"
-                except Exception as e: result = f"Error al editar: {str(e)[:200]}"; label = "error"
-            else: result = "Para editar imágenes configurá OPENAI_API_KEY."
+                try:
+                    img_url = await call_openai_image_edit(raw, prompt)
+                    result = "✅ Imagen editada con GPT-4o + DALL-E 3."
+                    label = "gpt-4o + dall-e-3"
+                except Exception as e:
+                    result = f"Error al editar: {str(e)[:200]}"
+                    label = "error"
+            # Flujo 2: Gemini Vision analiza la imagen → Pollinations genera la edición
+            elif GEMINI_KEY:
+                try:
+                    import urllib.parse as _urlparse
+                    b64 = base64.b64encode(raw).decode()
+                    # Paso 1: Gemini describe la imagen + modificación en un prompt en inglés
+                    analysis_prompt = (
+                        f"Analyze this image in detail and write a single English prompt (max 200 words) "
+                        f"to recreate it WITH this modification applied: {prompt}. "
+                        f"Reply ONLY with the prompt text, no explanations."
+                    )
+                    new_prompt = await call_gemini_vision(analysis_prompt, b64, mime_type or "image/jpeg")
+                    new_prompt = new_prompt.strip()[:400]
+                    # Paso 2: Pollinations genera la imagen con el prompt enriquecido
+                    seed = int(time.time()) % 99999
+                    encoded = _urlparse.quote(new_prompt)
+                    img_url = (
+                        f"https://image.pollinations.ai/prompt/{encoded}"
+                        f"?width=1024&height=1024&nologo=true&enhance=true&seed={seed}&model=flux&nofeed=true"
+                    )
+                    result = "✅ Imagen editada con Gemini Vision + Pollinations Flux."
+                    label = "gemini · vision + pollinations"
+                except Exception as e:
+                    result = f"Error al editar la imagen: {str(e)[:200]}"
+                    label = "error"
+            else:
+                result = "Para editar imágenes configurá OPENAI_API_KEY o GEMINI_API_KEY."
         elif is_image:
             if GEMINI_KEY:
                 b64 = base64.b64encode(raw).decode()
