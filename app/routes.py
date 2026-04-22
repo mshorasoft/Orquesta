@@ -3,7 +3,7 @@ import hmac, hashlib
 import os, time, base64, io, json, re, uuid, httpx
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request, Header, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File, Form, Request, Header, Depends
 from fastapi.responses import StreamingResponse, Response, RedirectResponse
 from pydantic import BaseModel
 from supabase import create_client, Client
@@ -1115,6 +1115,22 @@ STRICT RULES:
     )
 
 
+def _friendly_video_error(raw_error: str) -> str:
+    """Convierte errores técnicos de FAL en mensajes amigables para el usuario."""
+    e = raw_error.lower()
+    if "exhausted" in e or "locked" in e or "balance" in e or "billing" in e:
+        return (
+            "No puedo generar el video ahora mismo porque los créditos de video están agotados. "
+            "Podés recargar desde [fal.ai/dashboard/billing](https://fal.ai/dashboard/billing) "
+            "y el video quedará disponible enseguida."
+        )
+    if "timeout" in e:
+        return "La generación del video tardó demasiado. Intentá de nuevo en unos minutos."
+    if "not_pro" in e or "plan" in e:
+        return "La generación de videos es exclusiva del Plan Pro."
+    return f"No se pudo generar el video: {raw_error[:120]}"
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  GENERACIÓN DE MÚSICA — Cascada: udioapi.pro → FAL.ai Stable Audio
@@ -1338,32 +1354,24 @@ Respondé SOLO con JSON:
         # URL directa — Pollinations devuelve el audio directamente (no requiere polling)
         audio_url = f"https://audio.pollinations.ai/{encoded}"
 
-        # Verificar que el endpoint responde con un HEAD request
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        # Descargar el audio directamente (no confiar en HEAD — Pollinations puede responder
+        # text/html en HEAD aunque el audio exista; hacemos GET y verificamos por tamaño)
+        async with httpx.AsyncClient(timeout=45, follow_redirects=True) as c:
             try:
-                rh = await c.head(audio_url)
-                content_type = rh.headers.get("content-type", "")
-                print(f"🎵 Pollinations music HEAD: {rh.status_code} | {content_type}")
-                # Si responde OK con audio, retornar directamente
-                if rh.is_success and ("audio" in content_type or "mpeg" in content_type or "wav" in content_type):
-                    result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con Pollinations Music · Hacé clic en ▶️ para escuchar*"
-                    return audio_url, result_text, "pollinations · music"
-            except Exception:
-                pass
-
-            # Fallback: intentar GET y ver si viene audio
-            try:
-                rg = await c.get(audio_url, timeout=30)
+                rg = await c.get(audio_url)
                 content_type = rg.headers.get("content-type", "")
                 print(f"🎵 Pollinations music GET: {rg.status_code} | {content_type} | {len(rg.content)} bytes")
-                if rg.is_success and len(rg.content) > 5000:
-                    # Guardar en caché local para servir
+                if rg.is_success and len(rg.content) > 3000:
                     import uuid as _uuid
                     tok = str(_uuid.uuid4())
                     _file_cache[tok] = (rg.content, "orquesta_music.mp3", "audio/mpeg")
                     cached_url = f"/api/download/{tok}"
                     result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con Pollinations Music · Hacé clic en ▶️ para escuchar*"
                     return cached_url, result_text, "pollinations · music"
+                elif rg.is_success:
+                    # Respuesta válida pero vacía — devolver URL directa igual
+                    result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con Pollinations Music · Hacé clic en ▶️ para escuchar*"
+                    return audio_url, result_text, "pollinations · music"
             except Exception as ge:
                 print(f"🎵 Pollinations GET error: {ge}")
 
@@ -1514,7 +1522,7 @@ class OrchestrateResp(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/orchestrate", response_model=OrchestrateResp)
-async def orchestrate(req: OrchestrateReq, request: Request, authorization: str = Header(None)):
+async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: "BackgroundTasks", authorization: str = Header(None)):
     if not req.prompt.strip(): raise HTTPException(400, "Prompt vacío")
     # Rate limiting por IP
     client_ip = request.client.host if request.client else "unknown"
@@ -1599,12 +1607,12 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
         "propone una mejora", "no son premium", "mala calidad", "mejorar",
         "autorepar", "auto-mejor", "self-improv"
     ]
+    is_feedback = False
     prompt_lower = req.prompt.lower()
     if any(k in prompt_lower for k in feedback_triggers):
         log_error("/chat/feedback", f"Usuario reportó: {req.prompt[:150]}", "user_feedback")
-        # Disparar análisis en background sin bloquear
-        asyncio.create_task(analyze_and_propose_improvements())
-        print(f"📝 Feedback registrado y análisis disparado automáticamente")
+        is_feedback = True
+        print(f"📝 Feedback registrado — se enviará análisis en background")
 
     img_url = file_url = file_type = file_name = tts_url = result = video_url = ""
     label = "orquesta · llama 3.3"   # default siempre definido
@@ -1655,6 +1663,9 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
                 model_key=req.video_model,
                 duration_s=req.video_duration,
             )
+            # Convertir error técnico en mensaje amigable
+            if label == "error" and not video_url:
+                result = _friendly_video_error(result)
 
         elif task == "image_gen":
             img_url, result, label = await generate_image_smart(req.prompt)
@@ -1776,6 +1787,10 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
     # music_url: si sound_gen tuvo éxito, está en tts_url (caché local)
     # Si falló el caché, music_url tiene la URL directa
     _music_url = music_url if task == "sound_gen" and "music_url" in dir() else ""
+
+    # Disparar análisis de auto-mejoramiento DESPUÉS de responder al usuario
+    if is_feedback:
+        background_tasks.add_task(analyze_and_propose_improvements)
 
     return OrchestrateResp(
         result=result, task_type=task, model_label=label,
@@ -2167,42 +2182,10 @@ async def upload_file(
         is_edit = is_image and any(k in prompt.lower() for k in IMAGE_EDIT_KW)
 
         if is_image and is_edit:
-            # Flujo 1: OpenAI (GPT-4o + DALL-E 3)
             if OPENAI_KEY:
-                try:
-                    img_url = await call_openai_image_edit(raw, prompt)
-                    result = "✅ Imagen editada con GPT-4o + DALL-E 3."
-                    label = "gpt-4o + dall-e-3"
-                except Exception as e:
-                    result = f"Error al editar: {str(e)[:200]}"
-                    label = "error"
-            # Flujo 2: Gemini Vision analiza la imagen → Pollinations genera la edición
-            elif GEMINI_KEY:
-                try:
-                    import urllib.parse as _urlparse
-                    b64 = base64.b64encode(raw).decode()
-                    # Paso 1: Gemini describe la imagen + modificación en un prompt en inglés
-                    analysis_prompt = (
-                        f"Analyze this image in detail and write a single English prompt (max 200 words) "
-                        f"to recreate it WITH this modification applied: {prompt}. "
-                        f"Reply ONLY with the prompt text, no explanations."
-                    )
-                    new_prompt = await call_gemini_vision(analysis_prompt, b64, mime_type or "image/jpeg")
-                    new_prompt = new_prompt.strip()[:400]
-                    # Paso 2: Pollinations genera la imagen con el prompt enriquecido
-                    seed = int(time.time()) % 99999
-                    encoded = _urlparse.quote(new_prompt)
-                    img_url = (
-                        f"https://image.pollinations.ai/prompt/{encoded}"
-                        f"?width=1024&height=1024&nologo=true&enhance=true&seed={seed}&model=flux&nofeed=true"
-                    )
-                    result = "✅ Imagen editada con Gemini Vision + Pollinations Flux."
-                    label = "gemini · vision + pollinations"
-                except Exception as e:
-                    result = f"Error al editar la imagen: {str(e)[:200]}"
-                    label = "error"
-            else:
-                result = "Para editar imágenes configurá OPENAI_API_KEY o GEMINI_API_KEY."
+                try: img_url = await call_openai_image_edit(raw, prompt); result = "Imagen editada con GPT-4o + DALL-E 3."; label = "gpt-4o + dall-e-3"
+                except Exception as e: result = f"Error al editar: {str(e)[:200]}"; label = "error"
+            else: result = "Para editar imágenes configurá OPENAI_API_KEY."
         elif is_image:
             if GEMINI_KEY:
                 b64 = base64.b64encode(raw).decode()
