@@ -3,7 +3,7 @@ import hmac, hashlib
 import os, time, base64, io, json, re, uuid, httpx
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request, Header, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File, Form, Request, Header, Depends
 from fastapi.responses import StreamingResponse, Response, RedirectResponse
 from pydantic import BaseModel
 from supabase import create_client, Client
@@ -1115,6 +1115,22 @@ STRICT RULES:
     )
 
 
+def _friendly_video_error(raw_error: str) -> str:
+    """Convierte errores técnicos de FAL en mensajes amigables para el usuario."""
+    e = raw_error.lower()
+    if "exhausted" in e or "locked" in e or "balance" in e or "billing" in e:
+        return (
+            "No puedo generar el video ahora mismo porque los créditos de video están agotados. "
+            "Podés recargar desde [fal.ai/dashboard/billing](https://fal.ai/dashboard/billing) "
+            "y el video quedará disponible enseguida."
+        )
+    if "timeout" in e:
+        return "La generación del video tardó demasiado. Intentá de nuevo en unos minutos."
+    if "not_pro" in e or "plan" in e:
+        return "La generación de videos es exclusiva del Plan Pro."
+    return f"No se pudo generar el video: {raw_error[:120]}"
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  GENERACIÓN DE MÚSICA — Cascada: udioapi.pro → FAL.ai Stable Audio
@@ -1338,32 +1354,23 @@ Respondé SOLO con JSON:
         # URL directa — Pollinations devuelve el audio directamente (no requiere polling)
         audio_url = f"https://audio.pollinations.ai/{encoded}"
 
-        # Verificar que el endpoint responde con un HEAD request
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        # Descargar el audio directamente (no confiar en HEAD — Pollinations puede responder
+        # text/html en HEAD aunque el audio exista; hacemos GET y verificamos por tamaño)
+        async with httpx.AsyncClient(timeout=45, follow_redirects=True) as c:
             try:
-                rh = await c.head(audio_url)
-                content_type = rh.headers.get("content-type", "")
-                print(f"🎵 Pollinations music HEAD: {rh.status_code} | {content_type}")
-                # Si responde OK con audio, retornar directamente
-                if rh.is_success and ("audio" in content_type or "mpeg" in content_type or "wav" in content_type):
-                    result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con Pollinations Music · Hacé clic en ▶️ para escuchar*"
-                    return audio_url, result_text, "pollinations · music"
-            except Exception:
-                pass
-
-            # Fallback: intentar GET y ver si viene audio
-            try:
-                rg = await c.get(audio_url, timeout=30)
+                rg = await c.get(audio_url)
                 content_type = rg.headers.get("content-type", "")
                 print(f"🎵 Pollinations music GET: {rg.status_code} | {content_type} | {len(rg.content)} bytes")
-                if rg.is_success and len(rg.content) > 5000:
-                    # Guardar en caché local para servir
+                if rg.is_success and len(rg.content) > 3000:
                     import uuid as _uuid
                     tok = str(_uuid.uuid4())
                     _file_cache[tok] = (rg.content, "orquesta_music.mp3", "audio/mpeg")
                     cached_url = f"/api/download/{tok}"
                     result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con Pollinations Music · Hacé clic en ▶️ para escuchar*"
                     return cached_url, result_text, "pollinations · music"
+                elif rg.is_success:
+                    result_text = f"🎵 **{title}** · _{tags}_\n\n> 🎧 *Generada con Pollinations Music · Hacé clic en ▶️ para escuchar*"
+                    return audio_url, result_text, "pollinations · music"
             except Exception as ge:
                 print(f"🎵 Pollinations GET error: {ge}")
 
@@ -1514,7 +1521,7 @@ class OrchestrateResp(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/orchestrate", response_model=OrchestrateResp)
-async def orchestrate(req: OrchestrateReq, request: Request, authorization: str = Header(None)):
+async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: BackgroundTasks, authorization: str = Header(None)):
     if not req.prompt.strip(): raise HTTPException(400, "Prompt vacío")
     # Rate limiting por IP
     client_ip = request.client.host if request.client else "unknown"
@@ -1599,12 +1606,12 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
         "propone una mejora", "no son premium", "mala calidad", "mejorar",
         "autorepar", "auto-mejor", "self-improv"
     ]
+    is_feedback = False
     prompt_lower = req.prompt.lower()
     if any(k in prompt_lower for k in feedback_triggers):
         log_error("/chat/feedback", f"Usuario reportó: {req.prompt[:150]}", "user_feedback")
-        # Disparar análisis en background sin bloquear
-        asyncio.create_task(analyze_and_propose_improvements())
-        print(f"📝 Feedback registrado y análisis disparado automáticamente")
+        is_feedback = True
+        print(f"📝 Feedback registrado — se enviará análisis en background")
 
     img_url = file_url = file_type = file_name = tts_url = result = video_url = ""
     label = "orquesta · llama 3.3"   # default siempre definido
@@ -1655,6 +1662,9 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
                 model_key=req.video_model,
                 duration_s=req.video_duration,
             )
+            # Convertir error técnico en mensaje amigable
+            if label == "error" and not video_url:
+                result = _friendly_video_error(result)
 
         elif task == "image_gen":
             img_url, result, label = await generate_image_smart(req.prompt)
@@ -1776,6 +1786,10 @@ async def orchestrate(req: OrchestrateReq, request: Request, authorization: str 
     # music_url: si sound_gen tuvo éxito, está en tts_url (caché local)
     # Si falló el caché, music_url tiene la URL directa
     _music_url = music_url if task == "sound_gen" and "music_url" in dir() else ""
+
+    # Disparar análisis de auto-mejoramiento DESPUÉS de responder al usuario
+    if is_feedback:
+        background_tasks.add_task(analyze_and_propose_improvements)
 
     return OrchestrateResp(
         result=result, task_type=task, model_label=label,
@@ -2167,10 +2181,40 @@ async def upload_file(
         is_edit = is_image and any(k in prompt.lower() for k in IMAGE_EDIT_KW)
 
         if is_image and is_edit:
+            # Flujo 1: OpenAI (GPT-4o + DALL-E 3)
             if OPENAI_KEY:
-                try: img_url = await call_openai_image_edit(raw, prompt); result = "Imagen editada con GPT-4o + DALL-E 3."; label = "gpt-4o + dall-e-3"
-                except Exception as e: result = f"Error al editar: {str(e)[:200]}"; label = "error"
-            else: result = "Para editar imágenes configurá OPENAI_API_KEY."
+                try:
+                    img_url = await call_openai_image_edit(raw, prompt)
+                    result = "✅ Imagen editada con GPT-4o + DALL-E 3."
+                    label = "gpt-4o + dall-e-3"
+                except Exception as e:
+                    result = f"Error al editar: {str(e)[:200]}"
+                    label = "error"
+            # Flujo 2: Gemini Vision analiza la imagen → Pollinations genera la edición
+            elif GEMINI_KEY:
+                try:
+                    import urllib.parse as _urlparse
+                    b64 = base64.b64encode(raw).decode()
+                    analysis_prompt = (
+                        f"Analyze this image in detail and write a single English prompt (max 200 words) "
+                        f"to recreate it WITH this modification applied: {prompt}. "
+                        f"Reply ONLY with the prompt text, no explanations."
+                    )
+                    new_prompt = await call_gemini_vision(analysis_prompt, b64, mime_type or "image/jpeg")
+                    new_prompt = new_prompt.strip()[:400]
+                    seed = int(time.time()) % 99999
+                    encoded = _urlparse.quote(new_prompt)
+                    img_url = (
+                        f"https://image.pollinations.ai/prompt/{encoded}"
+                        f"?width=1024&height=1024&nologo=true&enhance=true&seed={seed}&model=flux&nofeed=true"
+                    )
+                    result = "✅ Imagen editada con Gemini Vision + Pollinations Flux."
+                    label = "gemini · vision + pollinations"
+                except Exception as e:
+                    result = f"Error al editar la imagen: {str(e)[:200]}"
+                    label = "error"
+            else:
+                result = "Para editar imágenes configurá OPENAI_API_KEY o GEMINI_API_KEY."
         elif is_image:
             if GEMINI_KEY:
                 b64 = base64.b64encode(raw).decode()
@@ -2504,14 +2548,44 @@ async def analyze_and_propose_improvements():
     recent = _error_log[-5:]
     errores_txt = "\n".join([f"- {e['endpoint']}: {e['error'][:80]}" for e in recent])
 
-    # Prompt estricto — sin old_code/new_code inventados (causan fallos en apply)
-    prompt = f"""Analizá estos errores de Orquesta AI y describí la mejora más importante.
+    # Obtener código actual de routes.py para que la IA pueda proponer cambios reales
+    current_code_snippet = ""
+    if GITHUB_TOKEN:
+        try:
+            full_code = await get_current_routes_content()
+            ep = top_error.get("endpoint", "")
+            if "upload" in ep or "vision" in ep or "image" in ep:
+                idx = full_code.find("async def call_gemini_vision")
+                if idx >= 0: current_code_snippet = full_code[idx:idx+800]
+            elif "video" in ep:
+                idx = full_code.find("async def generate_video_smart")
+                if idx >= 0: current_code_snippet = full_code[idx:idx+800]
+            elif "sound" in ep or "music" in ep:
+                idx = full_code.find("async def generate_music_smart")
+                if idx >= 0: current_code_snippet = full_code[idx:idx+800]
+            elif "feedback" in ep or "chat" in ep:
+                idx = full_code.find("feedback_triggers")
+                if idx >= 0: current_code_snippet = full_code[idx:idx+600]
+            if not current_code_snippet and full_code:
+                current_code_snippet = full_code[:600]
+        except Exception as ce:
+            print(f"⚠️ No se pudo obtener código actual: {ce}")
+
+    code_context = f"""\n\nFragmento de código actual relevante (app/routes.py):\n```python\n{current_code_snippet[:600]}\n```""" if current_code_snippet else ""
+
+    prompt = f"""Sos un experto en Python/FastAPI. Analizá estos errores de Orquesta AI y generá una mejora concreta con código real.
 
 Errores recientes:
-{errores_txt}
+{errores_txt}{code_context}
+
+REGLAS CRÍTICAS:
+- Si tenés el código actual, usá fragmentos EXACTOS en old_code (copiá textualmente)
+- new_code debe ser el reemplazo concreto y funcional
+- Si no podés proponer código exacto, dejá old_code y new_code vacíos pero explicá bien description y code_summary
+- safe_to_auto_apply solo true si el cambio es pequeño, seguro y no rompe nada
 
 Respondé ÚNICAMENTE con JSON válido (sin markdown, sin texto extra):
-{{"type":"bug_fix","description":"descripción clara del problema y solución en español","impact":"alto","code_summary":"qué archivo y función hay que revisar y por qué","old_code":"","new_code":"","safe_to_auto_apply":false}}"""
+{{"type":"bug_fix","description":"descripción clara del problema y la solución en español (2-3 oraciones)","impact":"alto","code_summary":"función y archivo exactos a modificar","old_code":"código actual exacto a reemplazar (o vacío)","new_code":"código nuevo de reemplazo (o vacío)","safe_to_auto_apply":false}}"""
 
     result_text = None
 
@@ -2647,20 +2721,51 @@ async def approve_improvement(proposal_id: str):
             error_msg = str(e)[:100]
             print(f"❌ Error aplicando cambio: {e}")
 
-    status_color = "#1D9E75" if applied else "#f39c12"
-    status_icon = "✅" if applied else "⚠️"
-    status_msg = "Cambio aplicado automáticamente en GitHub. Railway redesplegará en ~2 minutos." if applied else f"Mejora registrada pero no aplicada automáticamente. {error_msg}"
+    ts_fmt = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
 
-    return HTMLResponse(f"""
-    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;">
-    <div style="text-align:center;padding:2rem;max-width:500px;">
-      <h1 style="color:{status_color};">{status_icon} Mejora aprobada</h1>
-      <p style="font-size:15px;">{proposal.get('description','')}</p>
-      <p style="color:#aaa;font-size:13px;margin-top:1rem;">{status_msg}</p>
-      {"<p style='color:#1D9E75;font-size:12px;'>🚀 Railway redesplegará automáticamente en ~2 minutos</p>" if applied else ""}
-      <a href="/api/self-improve/pending" style="display:inline-block;margin-top:1.5rem;color:#1D9E75;font-size:13px;">Ver todas las mejoras →</a>
-    </div></body></html>
-    """)
+    if applied:
+        status_color = "#1D9E75"; status_icon = "✅"; status_title = "¡Mejora aplicada!"
+        status_msg = "El cambio fue commiteado en GitHub. Railway lo detectará y redesplegará automáticamente en ~2 minutos."
+        deploy_badge = """<div style="background:#0a2e1e;border:1px solid #1D9E75;border-radius:10px;padding:1rem 1.5rem;margin:1.5rem 0;text-align:left;">
+          <div style="color:#1D9E75;font-size:13px;font-weight:700;margin-bottom:6px;">🚀 Deploy automático en progreso</div>
+          <div style="color:#7abf9e;font-size:12px;">GitHub → Railway detecta el commit → redeploy en ~2 min</div>
+          <div style="margin-top:10px;height:4px;background:#1a3a2a;border-radius:4px;overflow:hidden;">
+            <div style="height:100%;width:100%;background:linear-gradient(90deg,#1D9E75,#2dd4a0);animation:bar 2s ease-in-out infinite;"></div>
+          </div></div>
+        <style>@keyframes bar{{0%{{width:0%}}100%{{width:100%}}}}</style>"""
+    else:
+        status_color = "#f39c12"; status_icon = "⚠️"; status_title = "Mejora registrada"
+        status_msg = error_msg if error_msg else "La mejora fue aprobada pero requiere aplicación manual (no había código exacto para reemplazar automáticamente)."
+        deploy_badge = f"""<div style="background:#2a1e0a;border:1px solid #f39c12;border-radius:10px;padding:1rem 1.5rem;margin:1.5rem 0;text-align:left;">
+          <div style="color:#f39c12;font-size:13px;font-weight:700;margin-bottom:6px;">📋 Acción manual requerida</div>
+          <div style="color:#c9a85c;font-size:12px;">{status_msg}</div></div>"""
+
+    desc = proposal.get("description","Sin descripción")
+    code_sum = proposal.get("code_summary","")
+    impact = proposal.get("impact","medio")
+    impact_color = "#e74c3c" if impact=="alto" else "#f39c12" if impact=="medio" else "#2ecc71"
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orquesta · Mejora aprobada</title>
+<style>*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f0d;color:#e3e8e4;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem}}
+.card{{background:#141614;border:1px solid #2a302a;border-radius:16px;padding:2.5rem 2rem;max-width:560px;width:100%}}
+.logo{{color:#1D9E75;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:1.5rem;opacity:.7}}
+.icon{{font-size:3rem;margin-bottom:.75rem}}.badge{{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;background:{impact_color}22;color:{impact_color};border:1px solid {impact_color}44;margin-bottom:1.2rem}}
+h1{{font-size:1.6rem;color:{status_color};margin-bottom:.5rem}}.desc{{color:#b0c0b2;font-size:14px;line-height:1.6;margin-bottom:.75rem}}
+.code-sum{{background:#0d1a0f;border-left:3px solid #1D9E75;padding:.75rem 1rem;border-radius:0 8px 8px 0;font-size:12px;color:#7abf9e;font-family:monospace;margin-bottom:1rem}}
+.meta{{color:#4a5e4c;font-size:11px;margin-top:1.5rem}}.btn{{display:inline-block;margin-top:1.75rem;padding:10px 24px;background:#1D9E75;color:white;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600}}</style>
+</head><body><div class="card">
+<div class="logo">🤖 Orquesta · Auto-mejoramiento</div>
+<div class="icon">{status_icon}</div><h1>{status_title}</h1>
+<span class="badge">Impacto: {impact}</span>
+<p class="desc">{desc}</p>
+{"<div class='code-sum'>" + code_sum + "</div>" if code_sum else ""}
+{deploy_badge}
+<div class="meta">ID: {proposal_id} &nbsp;·&nbsp; {ts_fmt}</div>
+<a class="btn" href="/api/self-improve/pending">Ver todas las mejoras →</a>
+</div></body></html>""")
 
 @router.get("/self-improve/reject/{proposal_id}")
 async def reject_improvement(proposal_id: str):
@@ -2672,13 +2777,27 @@ async def reject_improvement(proposal_id: str):
     print(f"❌ MEJORA RECHAZADA: {proposal_id}")
     
     from fastapi.responses import HTMLResponse
-    return HTMLResponse(f"""
-    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
-    <div style="text-align:center;padding:2rem;">
-      <h1 style="color:#c0392b;">❌ Mejora rechazada</h1>
-      <p style="color:#3d4e3e;font-size:13px;">Orquesta tomó nota. No aplicará este cambio.</p>
-    </div></body></html>
-    """)
+    desc_r = _pending_improvements.get(proposal_id, {}).get("description", "Sin descripción")
+    ts_r = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orquesta · Mejora rechazada</title>
+<style>*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0f0d;color:#e3e8e4;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem}}
+.card{{background:#141614;border:1px solid #2a302a;border-radius:16px;padding:2.5rem 2rem;max-width:480px;width:100%;text-align:center}}
+.logo{{color:#1D9E75;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:1.5rem;opacity:.7}}
+.icon{{font-size:3rem;margin-bottom:.75rem}}h1{{font-size:1.6rem;color:#c0392b;margin-bottom:.75rem}}
+.desc{{color:#7a8a7c;font-size:13px;line-height:1.6;margin-bottom:1rem}}
+.note{{background:#1a0d0d;border:1px solid #c0392b33;border-radius:10px;padding:.75rem 1rem;font-size:12px;color:#a07070;margin-bottom:1.5rem}}
+.meta{{color:#3a4e3c;font-size:11px;margin-top:1rem}}.btn{{display:inline-block;margin-top:1.5rem;padding:10px 24px;background:#1D9E75;color:white;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600}}</style>
+</head><body><div class="card">
+<div class="logo">🤖 Orquesta · Auto-mejoramiento</div>
+<div class="icon">❌</div><h1>Mejora rechazada</h1>
+<p class="desc">{desc_r}</p>
+<div class="note">Orquesta tomó nota. Este cambio no se aplicará.<br>Si fue un error, podés re-disparar el análisis manualmente.</div>
+<div class="meta">ID: {proposal_id} &nbsp;·&nbsp; {ts_r}</div>
+<a class="btn" href="/api/self-improve/pending">Ver todas las mejoras →</a>
+</div></body></html>""")
 
 @router.post("/self-improve/trigger")
 async def trigger_analysis_post():
@@ -2693,7 +2812,7 @@ async def trigger_analysis_post():
 
 @router.get("/self-improve/trigger")
 async def trigger_analysis_get():
-    """Dispara un análisis manual via GET — usa el mismo motor que el análisis automático."""
+    """Dispara un análisis manual via GET — responde rápido."""
     from fastapi.responses import HTMLResponse
 
     # Agregar errores de ejemplo si no hay ninguno
@@ -2702,14 +2821,16 @@ async def trigger_analysis_get():
         log_error("/api/stt", "OpenAI quota exceeded", "stt")
         log_error("/api/orchestrate", "video_gen no credits", "video")
 
+    # Analizar errores — usar Gemini primero (más tokens disponibles), Groq como fallback
+    top_err = _error_log[-1] if _error_log else {"endpoint": "api/general", "error": "mejora de rendimiento general"}
+
     # Usar la misma función que el análisis automático — incluye descarga de código desde GitHub
     proposal_id = await analyze_and_propose_improvements()
     proposal = _pending_improvements.get(proposal_id) if proposal_id else None
     email_sent = bool(proposal)
+    print(f"📧 Trigger GET: {'✅ análisis completado' if proposal_id else '❌ sin errores para analizar'}")
 
-    print(f"📧 Email {'✅ enviado' if email_sent else '❌ no enviado — revisar logs de Railway'}")
-
-    pending = list(_pending_improvements.values())
+        pending = list(_pending_improvements.values())
     items = "".join([
         f"""<li style='margin:.8rem 0;padding:.8rem;background:#1c1e1b;border-radius:8px;border-left:3px solid #1D9E75;'>
         <strong style='color:#1D9E75;'>{p.get('type','').upper()}</strong>: {p.get('description','')}
