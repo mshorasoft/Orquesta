@@ -2830,7 +2830,7 @@ async def trigger_analysis_get():
     email_sent = bool(proposal)
     print(f"📧 Trigger GET: {'✅ análisis completado' if proposal_id else '❌ sin errores para analizar'}")
 
-        pending = list(_pending_improvements.values())
+    pending = list(_pending_improvements.values())
     items = "".join([
         f"""<li style='margin:.8rem 0;padding:.8rem;background:#1c1e1b;border-radius:8px;border-left:3px solid #1D9E75;'>
         <strong style='color:#1D9E75;'>{p.get('type','').upper()}</strong>: {p.get('description','')}
