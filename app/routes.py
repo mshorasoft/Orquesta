@@ -2554,18 +2554,29 @@ async def analyze_and_propose_improvements():
         try:
             full_code = await get_current_routes_content()
             ep = top_error.get("endpoint", "")
-            if "upload" in ep or "vision" in ep or "image" in ep:
-                idx = full_code.find("async def call_gemini_vision")
-                if idx >= 0: current_code_snippet = full_code[idx:idx+800]
-            elif "video" in ep:
-                idx = full_code.find("async def generate_video_smart")
-                if idx >= 0: current_code_snippet = full_code[idx:idx+800]
-            elif "sound" in ep or "music" in ep:
-                idx = full_code.find("async def generate_music_smart")
-                if idx >= 0: current_code_snippet = full_code[idx:idx+800]
-            elif "feedback" in ep or "chat" in ep:
-                idx = full_code.find("feedback_triggers")
-                if idx >= 0: current_code_snippet = full_code[idx:idx+600]
+            err_text = (top_error.get("error", "") + " " + top_error.get("context", "")).lower()
+
+            # Buscar fragmento relevante por endpoint Y por palabras clave del error
+            search_map = [
+                (["image", "vision", "upload", "foto", "imagen", "edit"], "async def call_gemini_vision"),
+                (["video", "kling", "fal", "mp4"], "async def generate_video_smart"),
+                (["sound", "music", "cancion", "canción", "audio", "udio", "pollination"], "async def generate_music_smart"),
+                (["feedback", "auto-mejor", "autorepar", "self-improv", "mejora", "código exacto"], "async def analyze_and_propose_improvements"),
+                (["classify", "clasificador", "interpreta", "confunde", "video gen", "sound_gen"], "def classify"),
+                (["excel", "xlsx", "word", "docx", "pdf", "archivo"], "async def generate_file_from_prompt"),
+                (["upload", "stt", "tts", "voz"], "async def call_openai_tts"),
+            ]
+
+            combined = ep + " " + err_text
+            for keywords, func_name in search_map:
+                if any(k in combined for k in keywords):
+                    idx = full_code.find(func_name)
+                    if idx >= 0:
+                        current_code_snippet = full_code[idx:idx+800]
+                        print(f"📎 Fragmento encontrado: {func_name}")
+                        break
+
+            # Fallback: primeras líneas del archivo
             if not current_code_snippet and full_code:
                 current_code_snippet = full_code[:600]
         except Exception as ce:
