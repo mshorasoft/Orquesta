@@ -2519,14 +2519,49 @@ async def analyze_and_propose_improvements():
     recent = _error_log[-5:]
     errores_txt = "\n".join([f"- {e['endpoint']}: {e['error'][:80]}" for e in recent])
 
-    # Prompt estricto — sin old_code/new_code inventados (causan fallos en apply)
-    prompt = f"""Analizá estos errores de Orquesta AI y describí la mejora más importante.
+    # Obtener código actual de routes.py para que la IA pueda proponer cambios reales
+    current_code_snippet = ""
+    if GITHUB_TOKEN:
+        try:
+            full_code = await get_current_routes_content()
+            # Extraer fragmento relevante según el endpoint del error
+            ep = top_error.get("endpoint", "")
+            if "upload" in ep or "vision" in ep or "image" in ep:
+                # Buscar la función call_gemini_vision
+                idx = full_code.find("async def call_gemini_vision")
+                if idx >= 0: current_code_snippet = full_code[idx:idx+800]
+            elif "video" in ep:
+                idx = full_code.find("async def generate_video_smart")
+                if idx >= 0: current_code_snippet = full_code[idx:idx+800]
+            elif "sound" in ep or "music" in ep:
+                idx = full_code.find("async def generate_music_smart")
+                if idx >= 0: current_code_snippet = full_code[idx:idx+800]
+            elif "feedback" in ep or "chat" in ep:
+                idx = full_code.find("feedback_triggers")
+                if idx >= 0: current_code_snippet = full_code[idx:idx+600]
+            if not current_code_snippet and full_code:
+                current_code_snippet = full_code[:600]
+        except Exception as ce:
+            print(f"⚠️ No se pudo obtener código actual: {ce}")
+
+    code_context = f"""\n\nFragmento de código actual relevante (app/routes.py):
+```python
+{current_code_snippet[:600]}
+```""" if current_code_snippet else ""
+
+    prompt = f"""Sos un experto en Python/FastAPI. Analizá estos errores de Orquesta AI y generá una mejora concreta con código real.
 
 Errores recientes:
-{errores_txt}
+{errores_txt}{code_context}
+
+REGLAS CRÍTICAS:
+- Si tenés el código actual, usá fragmentos EXACTOS en old_code (copiá textualmente)
+- new_code debe ser el reemplazo concreto y funcional
+- Si no podés proponer código exacto, dejá old_code y new_code vacíos pero explicá bien description y code_summary
+- safe_to_auto_apply solo true si el cambio es pequeño, seguro y no rompe nada
 
 Respondé ÚNICAMENTE con JSON válido (sin markdown, sin texto extra):
-{{"type":"bug_fix","description":"descripción clara del problema y solución en español","impact":"alto","code_summary":"qué archivo y función hay que revisar y por qué","old_code":"","new_code":"","safe_to_auto_apply":false}}"""
+{{"type":"bug_fix","description":"descripción clara del problema y la solución en español (2-3 oraciones)","impact":"alto","code_summary":"función y archivo exactos a modificar","old_code":"código actual exacto a reemplazar (o vacío)","new_code":"código nuevo de reemplazo (o vacío)","safe_to_auto_apply":false}}"""
 
     result_text = None
 
@@ -2662,20 +2697,83 @@ async def approve_improvement(proposal_id: str):
             error_msg = str(e)[:100]
             print(f"❌ Error aplicando cambio: {e}")
 
-    status_color = "#1D9E75" if applied else "#f39c12"
-    status_icon = "✅" if applied else "⚠️"
-    status_msg = "Cambio aplicado automáticamente en GitHub. Railway redesplegará en ~2 minutos." if applied else f"Mejora registrada pero no aplicada automáticamente. {error_msg}"
+    ts_fmt = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
 
-    return HTMLResponse(f"""
-    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;">
-    <div style="text-align:center;padding:2rem;max-width:500px;">
-      <h1 style="color:{status_color};">{status_icon} Mejora aprobada</h1>
-      <p style="font-size:15px;">{proposal.get('description','')}</p>
-      <p style="color:#aaa;font-size:13px;margin-top:1rem;">{status_msg}</p>
-      {"<p style='color:#1D9E75;font-size:12px;'>🚀 Railway redesplegará automáticamente en ~2 minutos</p>" if applied else ""}
-      <a href="/api/self-improve/pending" style="display:inline-block;margin-top:1.5rem;color:#1D9E75;font-size:13px;">Ver todas las mejoras →</a>
-    </div></body></html>
-    """)
+    if applied:
+        status_color = "#1D9E75"
+        status_icon = "✅"
+        status_title = "¡Mejora aplicada!"
+        status_msg = "El cambio fue commiteado en GitHub. Railway lo detectará y redesplegará automáticamente en ~2 minutos."
+        deploy_badge = """
+        <div style="background:#0a2e1e;border:1px solid #1D9E75;border-radius:10px;padding:1rem 1.5rem;margin:1.5rem 0;text-align:left;">
+          <div style="color:#1D9E75;font-size:13px;font-weight:700;margin-bottom:6px;">🚀 Deploy automático en progreso</div>
+          <div style="color:#7abf9e;font-size:12px;">GitHub → Railway detecta el commit → redeploy en ~2 min</div>
+          <div style="margin-top:10px;height:4px;background:#1a3a2a;border-radius:4px;overflow:hidden;">
+            <div style="height:100%;width:100%;background:linear-gradient(90deg,#1D9E75,#2dd4a0);animation:bar 2s ease-in-out infinite;"></div>
+          </div>
+        </div>
+        <style>@keyframes bar{{0%{{width:0%}}100%{{width:100%}}}}</style>"""
+    else:
+        status_color = "#f39c12"
+        status_icon = "⚠️"
+        status_title = "Mejora registrada"
+        status_msg = error_msg if error_msg else "La mejora fue aprobada pero requiere aplicación manual (no había código exacto para reemplazar automáticamente)."
+        deploy_badge = f"""
+        <div style="background:#2a1e0a;border:1px solid #f39c12;border-radius:10px;padding:1rem 1.5rem;margin:1.5rem 0;text-align:left;">
+          <div style="color:#f39c12;font-size:13px;font-weight:700;margin-bottom:6px;">📋 Acción manual requerida</div>
+          <div style="color:#c9a85c;font-size:12px;">{status_msg}</div>
+        </div>"""
+
+    desc = proposal.get("description", "Sin descripción")
+    code_sum = proposal.get("code_summary", "")
+    impact = proposal.get("impact", "medio")
+    impact_color = "#e74c3c" if impact == "alto" else "#f39c12" if impact == "medio" else "#2ecc71"
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orquesta · Mejora aprobada</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0d0f0d; color: #e3e8e4; min-height: 100vh;
+            display: flex; align-items: center; justify-content: center; padding: 1.5rem; }}
+    .card {{ background: #141614; border: 1px solid #2a302a; border-radius: 16px;
+             padding: 2.5rem 2rem; max-width: 560px; width: 100%; }}
+    .logo {{ color: #1D9E75; font-size: 13px; font-weight: 700; letter-spacing: .08em;
+             text-transform: uppercase; margin-bottom: 1.5rem; opacity: .7; }}
+    .icon {{ font-size: 3rem; margin-bottom: .75rem; }}
+    h1 {{ font-size: 1.6rem; color: {status_color}; margin-bottom: .5rem; }}
+    .badge {{ display: inline-block; padding: 3px 10px; border-radius: 20px;
+              font-size: 11px; font-weight: 700; background: {impact_color}22;
+              color: {impact_color}; border: 1px solid {impact_color}44; margin-bottom: 1.2rem; }}
+    .desc {{ color: #b0c0b2; font-size: 14px; line-height: 1.6; margin-bottom: .75rem; }}
+    .code-sum {{ background: #0d1a0f; border-left: 3px solid #1D9E75; padding: .75rem 1rem;
+                 border-radius: 0 8px 8px 0; font-size: 12px; color: #7abf9e;
+                 font-family: monospace; margin-bottom: 1rem; }}
+    .meta {{ color: #4a5e4c; font-size: 11px; margin-top: 1.5rem; }}
+    .btn {{ display: inline-block; margin-top: 1.75rem; padding: 10px 24px;
+            background: #1D9E75; color: white; border-radius: 8px; text-decoration: none;
+            font-size: 13px; font-weight: 600; transition: background .2s; }}
+    .btn:hover {{ background: #17835f; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🤖 Orquesta · Auto-mejoramiento</div>
+    <div class="icon">{status_icon}</div>
+    <h1>{status_title}</h1>
+    <span class="badge">Impacto: {impact}</span>
+    <p class="desc">{desc}</p>
+    {"<div class='code-sum'>" + code_sum + "</div>" if code_sum else ""}
+    {deploy_badge}
+    <div class="meta">ID: {proposal_id} &nbsp;·&nbsp; {ts_fmt}</div>
+    <a class="btn" href="/api/self-improve/pending">Ver todas las mejoras →</a>
+  </div>
+</body>
+</html>""")
 
 @router.get("/self-improve/reject/{proposal_id}")
 async def reject_improvement(proposal_id: str):
@@ -2687,13 +2785,46 @@ async def reject_improvement(proposal_id: str):
     print(f"❌ MEJORA RECHAZADA: {proposal_id}")
     
     from fastapi.responses import HTMLResponse
-    return HTMLResponse(f"""
-    <html><body style="font-family:sans-serif;background:#0d0f0d;color:#e3e8e4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
-    <div style="text-align:center;padding:2rem;">
-      <h1 style="color:#c0392b;">❌ Mejora rechazada</h1>
-      <p style="color:#3d4e3e;font-size:13px;">Orquesta tomó nota. No aplicará este cambio.</p>
-    </div></body></html>
-    """)
+    desc_r = _pending_improvements.get(proposal_id, {}).get("description", "Sin descripción")
+    ts_r = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orquesta · Mejora rechazada</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0d0f0d; color: #e3e8e4; min-height: 100vh;
+            display: flex; align-items: center; justify-content: center; padding: 1.5rem; }}
+    .card {{ background: #141614; border: 1px solid #2a302a; border-radius: 16px;
+             padding: 2.5rem 2rem; max-width: 480px; width: 100%; text-align: center; }}
+    .logo {{ color: #1D9E75; font-size: 13px; font-weight: 700; letter-spacing: .08em;
+             text-transform: uppercase; margin-bottom: 1.5rem; opacity: .7; }}
+    .icon {{ font-size: 3rem; margin-bottom: .75rem; }}
+    h1 {{ font-size: 1.6rem; color: #c0392b; margin-bottom: .75rem; }}
+    .desc {{ color: #7a8a7c; font-size: 13px; line-height: 1.6; margin-bottom: 1rem; }}
+    .note {{ background: #1a0d0d; border: 1px solid #c0392b33; border-radius: 10px;
+             padding: .75rem 1rem; font-size: 12px; color: #a07070; margin-bottom: 1.5rem; }}
+    .meta {{ color: #3a4e3c; font-size: 11px; margin-top: 1rem; }}
+    .btn {{ display: inline-block; margin-top: 1.5rem; padding: 10px 24px;
+            background: #1D9E75; color: white; border-radius: 8px; text-decoration: none;
+            font-size: 13px; font-weight: 600; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🤖 Orquesta · Auto-mejoramiento</div>
+    <div class="icon">❌</div>
+    <h1>Mejora rechazada</h1>
+    <p class="desc">{desc_r}</p>
+    <div class="note">Orquesta tomó nota. Este cambio no se aplicará.<br>Si fue un error, podés re-disparar el análisis manualmente.</div>
+    <div class="meta">ID: {proposal_id} &nbsp;·&nbsp; {ts_r}</div>
+    <a class="btn" href="/api/self-improve/pending">Ver todas las mejoras →</a>
+  </div>
+</body>
+</html>""")
 
 @router.post("/self-improve/trigger")
 async def trigger_analysis_post():
