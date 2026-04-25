@@ -949,7 +949,7 @@ function buildAudioPlayer(audioUrl){
 // ══════════════════════════════════════════════════════════════
 //  ADD MESSAGE
 // ══════════════════════════════════════════════════════════════
-function addMsg(role,content,meta,imgUrl,filename,fileData,ttsUrl,videoUrl,isUpgrade){
+function addMsg(role,content,meta,imgUrl,filename,fileData,ttsUrl,videoUrl,musicUrl,isUpgrade){
   document.getElementById('welcome')?.remove();
   const wrap=document.getElementById('messages');
   const div=document.createElement('div'); div.className=`message ${role}`;
@@ -1020,6 +1020,11 @@ function addMsg(role,content,meta,imgUrl,filename,fileData,ttsUrl,videoUrl,isUpg
         vw.innerHTML=`<div class="video-actions"><a href="${dlUrl}" download="orquesta_video.mp4" class="video-link-btn">⬇️ Descargar MP4</a><a href="${videoUrl}" target="_blank" class="video-link-btn" style="margin-left:6px;">▶️ Ver video</a></div>`;
       };
       vid.src=videoUrl; bubble.appendChild(vw);
+    }
+    if(musicUrl&&!isUpgrade){
+      const mw=document.createElement('div'); mw.className='music-player-wrap';
+      const mp=createMusicPlayer(musicUrl,'🎵 Canción generada','orquesta · música');
+      mw.appendChild(mp); bubble.appendChild(mw);
     }
     if(ttsUrl&&role==='ai'&&!isUpgrade){
       const player=buildAudioPlayer(ttsUrl);
@@ -1567,7 +1572,7 @@ async function send(){
 
 **Plan Gratis:** solo conversaciones de texto (hasta 20 preguntas).
 **Plan Pro $9/mes:** imágenes IA, videos IA, Excel, Word, PDF, voz, búsqueda web y mensajes ilimitados.`;
-    addMsg('ai', msg, null, '', null, null, '', '', true);
+    addMsg('ai', msg, null, '', null, null, '', '', '', true);
     console.log('BLOQUEADO POR FRONTEND');
     return;
   }
@@ -1579,7 +1584,7 @@ async function send(){
     const msg = `🔒 Alcanzaste el límite de **${FREE_LIMIT} preguntas** del Plan Gratis.
 
 Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y más.`;
-    addMsg('ai', msg, null, '', null, null, '', '', true);
+    addMsg('ai', msg, null, '', null, null, '', '', '', true);
     return;
   }
   if(!convId) await createConversation();
@@ -1638,16 +1643,16 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     console.log('userIsPro en respuesta:', userIsPro);
     if(userIsPro){
       // Pro: mostrar siempre la respuesta del backend sin ningún filtro
-      addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
+      addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',data.music_url||'',false);
       activeHistory.push({role:'assistant',content:data.result});
     } else {
       // Free: mostrar upgrade banner si el backend lo indica
       const serverBlocked = (data.upgrade_banner && data.upgrade_banner.length > 0) ||
         (data.latency_ms < 10 && ['esta funcion requiere','plan pro'].some(t=>(data.result||'').toLowerCase().includes(t)));
       if(serverBlocked){
-        addMsg('ai','🔒 Esta función requiere **Plan Pro**.',null,'',null,null,'','',true);
+        addMsg('ai','🔒 Esta función requiere **Plan Pro**.',null,'',null,null,'','','',true);
       } else {
-        addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
+        addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',data.music_url||'',false);
         activeHistory.push({role:'assistant',content:data.result});
       }
     }
