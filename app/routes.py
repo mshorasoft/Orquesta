@@ -2593,21 +2593,27 @@ async def analyze_and_propose_improvements():
         except Exception as ce:
             print(f"⚠️ No se pudo obtener código actual: {ce}")
 
-    code_context = f"""\n\nFragmento de código actual relevante (app/routes.py):\n```python\n{current_code_snippet[:600]}\n```""" if current_code_snippet else ""
+    # Estrategia: nosotros proveemos el old_code exacto, la IA solo propone el new_code
+    # Esto garantiza que el match en GitHub siempre funcione
+    exact_old_code = current_code_snippet[:600] if current_code_snippet else ""
 
-    prompt = f"""Sos un experto en Python/FastAPI. Analizá estos errores de Orquesta AI y generá una mejora concreta con código real.
+    code_context = f"""\n\nCÓDIGO ACTUAL EXACTO a mejorar (app/routes.py):\n```python\n{exact_old_code}\n```""" if exact_old_code else ""
+
+    prompt = f"""Sos un experto senior en Python/FastAPI. Hay errores en Orquesta AI que necesitan fix urgente.
 
 Errores recientes:
 {errores_txt}{code_context}
 
-REGLAS CRÍTICAS:
-- Si tenés el código actual, usá fragmentos EXACTOS en old_code (copiá textualmente)
-- new_code debe ser el reemplazo concreto y funcional
-- Si no podés proponer código exacto, dejá old_code y new_code vacíos pero explicá bien description y code_summary
-- safe_to_auto_apply solo true si el cambio es pequeño, seguro y no rompe nada
+TU TAREA:
+1. Analizá el error y el código actual
+2. Escribí ÚNICAMENTE el código corregido para reemplazar el fragmento mostrado (new_code)
+3. El old_code ya está determinado — usá EXACTAMENTE el texto del "CÓDIGO ACTUAL EXACTO" de arriba
+4. Si el fix es pequeño y seguro, marcá safe_to_auto_apply como true
+
+IMPORTANTE: new_code debe ser un reemplazo funcional del fragmento mostrado. Mantené el mismo nivel de indentación.
 
 Respondé ÚNICAMENTE con JSON válido (sin markdown, sin texto extra):
-{{"type":"bug_fix","description":"descripción clara del problema y la solución en español (2-3 oraciones)","impact":"alto","code_summary":"función y archivo exactos a modificar","old_code":"código actual exacto a reemplazar (o vacío)","new_code":"código nuevo de reemplazo (o vacío)","safe_to_auto_apply":false}}"""
+{{"type":"bug_fix","description":"descripción clara del problema y fix en español (2-3 oraciones)","impact":"alto","code_summary":"función exacta modificada en app/routes.py","old_code":{json.dumps(exact_old_code)},"new_code":"código corregido aquí","safe_to_auto_apply":false}}"""
 
     result_text = None
 
