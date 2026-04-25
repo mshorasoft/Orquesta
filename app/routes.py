@@ -485,7 +485,18 @@ def classify(prompt, mode, history=None):
         "no son premium", "son básicos", "son basicos", "son malos",
         "mala calidad", "no me gusta", "mejorar esto", "esto está mal",
         "esto esta mal", "necesito que mejores", "autorepara", "auto-repara",
-        "autorepar", "funcionamiento", "errores en tu", "errores en mi"
+        "autorepar", "funcionamiento", "errores en tu", "errores en mi",
+        # Frases de reporte explícito
+        "reporta esta", "reportá esta", "reportar esta", "reportes esta",
+        "reporta el", "reportá el", "reportar el", "reportes el",
+        "reporta la", "reportá la", "reportar la", "reportes la",
+        "reporta esto", "reportá esto",
+        "a horacio", "para horacio", "avisá a", "avisa a",
+        "automejoramiento", "auto mejoramiento", "sistema de mejora",
+        "sistema de auto", "self-improv", "self improv",
+        "esta falla", "este fallo", "este error", "esta falla",
+        "información detallada", "sin limites", "sin límites",
+        "todo lo que averigues", "que averigues",
     ]
     if any(k in p for k in feedback_kw):
         return "general"  # Feedback/queja siempre va a chat general
