@@ -2655,7 +2655,8 @@ async def analyze_and_propose_improvements():
 
     # Estrategia: nosotros proveemos el old_code exacto, la IA solo propone el new_code
     # Esto garantiza que el match en GitHub siempre funcione
-    exact_old_code = current_code_snippet[:600] if current_code_snippet else ""
+    # Usamos 1200 chars para dar suficiente contexto a la IA y al reemplazo posterior
+    exact_old_code = current_code_snippet[:1200] if current_code_snippet else ""
 
     code_context = f"""\n\nCÓDIGO ACTUAL EXACTO a mejorar (app/routes.py):\n```python\n{exact_old_code}\n```""" if exact_old_code else ""
 
@@ -2774,17 +2775,45 @@ async def approve_improvement(proposal_id: str):
             # Obtener el contenido actual del archivo
             current_content = await get_current_routes_content()
             if current_content and old_code.strip() in current_content:
-                # Aplicar el reemplazo exacto
+                # ── CASO 1: Match exacto — reemplazo directo ──────────────────
                 updated_content = current_content.replace(old_code.strip(), new_code.strip(), 1)
                 commit_msg = f"Auto-mejora #{proposal_id}: {proposal.get('description','mejora automática')}"
                 applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
                 if applied:
-                    print(f"✅ Cambio aplicado en GitHub: {proposal_id}")
+                    print(f"✅ Cambio aplicado en GitHub (match exacto): {proposal_id}")
                 else:
                     error_msg = "Error al hacer commit en GitHub"
             elif current_content:
-                # Fragmento no encontrado exacto — agregar mejora como comentario documentado
-                improvement_note = f"""
+                # ── CASO 2: Match difuso — buscar la función por nombre ───────
+                # El código en GitHub puede haber cambiado levemente desde que se
+                # generó el old_code. Intentar encontrar la función por su firma.
+                fuzzy_applied = False
+                func_signatures = re.findall(
+                    r'(?:async def|def)\s+\w+\s*\([^)]*\)\s*(?:->[^:]+)?:',
+                    old_code.strip()
+                )
+                if func_signatures:
+                    func_sig = func_signatures[0]
+                    sig_pos = current_content.find(func_sig)
+                    if sig_pos >= 0:
+                        # Encontrar el bloque completo de la función en el archivo actual
+                        block_end = current_content.find('\nasync def ', sig_pos + 10)
+                        if block_end == -1:
+                            block_end = current_content.find('\ndef ', sig_pos + 10)
+                        if block_end == -1:
+                            block_end = sig_pos + 1500
+                        current_func_block = current_content[sig_pos:block_end]
+                        # Reemplazar el bloque encontrado con el new_code
+                        updated_content = current_content.replace(current_func_block, new_code.strip(), 1)
+                        commit_msg = f"Auto-mejora #{proposal_id} (fuzzy): {proposal.get('description','mejora automática')}"
+                        fuzzy_applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
+                        if fuzzy_applied:
+                            applied = True
+                            print(f"✅ Cambio aplicado en GitHub (match difuso): {proposal_id}")
+
+                if not fuzzy_applied:
+                    # ── CASO 3: Sin match — agregar como comentario documentado ──
+                    improvement_note = f"""
 # ── AUTO-MEJORA #{proposal_id} (pendiente de aplicar manualmente) ──────────
 # Descripción: {proposal.get('description','')}
 # Fecha: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
@@ -2793,15 +2822,14 @@ async def approve_improvement(proposal_id: str):
 # DESPUÉS: {new_code.strip()[:200]}
 # ─────────────────────────────────────────────────────────────────────────────
 """
-                # Agregar al final del archivo como referencia
-                updated_content = current_content + improvement_note
-                commit_msg = f"Auto-mejora #{proposal_id} (doc): {proposal.get('description','')}"
-                applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
-                if applied:
-                    print(f"✅ Mejora documentada en GitHub: {proposal_id}")
-                    error_msg = "Mejora documentada — fragmento exacto no encontrado. Requiere revisión manual."
-                else:
-                    error_msg = "No se pudo hacer commit en GitHub"
+                    updated_content = current_content + improvement_note
+                    commit_msg = f"Auto-mejora #{proposal_id} (doc): {proposal.get('description','')}"
+                    applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
+                    if applied:
+                        print(f"✅ Mejora documentada en GitHub: {proposal_id}")
+                        error_msg = "Mejora documentada — fragmento exacto no encontrado. Revisión manual requerida."
+                    else:
+                        error_msg = "No se pudo hacer commit en GitHub"
             else:
                 error_msg = "No se pudo obtener el código actual de GitHub"
                 print(f"⚠️ {error_msg}")
