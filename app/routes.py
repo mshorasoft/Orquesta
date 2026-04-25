@@ -1615,7 +1615,24 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
         "detecté", "detecte", "encontré", "encontre", "hay un error",
         "está fallando", "esta fallando", "no funciona", "analices estos errores",
         "propone una mejora", "no son premium", "mala calidad", "mejorar",
-        "autorepar", "auto-mejor", "self-improv"
+        "autorepar", "auto-mejor", "self-improv",
+        # Keywords extendidas — mismas que classify()
+        "tiene un error", "no está funcionando", "problema con", "falla en",
+        "necesito que analices", "analiza estos errores",
+        "son básicos", "son basicos", "son malos", "no me gusta",
+        "mejorar esto", "esto está mal", "esto esta mal",
+        "necesito que mejores", "autorepara", "auto-repara",
+        "funcionamiento", "errores en tu", "errores en mi",
+        "reporta esta", "reportá esta", "reportar esta", "reportes esta",
+        "reporta el", "reportá el", "reportar el", "reportes el",
+        "reporta la", "reportá la", "reportar la", "reportes la",
+        "reporta esto", "reportá esto",
+        "a horacio", "para horacio", "avisá a", "avisa a",
+        "automejoramiento", "auto mejoramiento", "sistema de mejora",
+        "sistema de auto", "self improv",
+        "esta falla", "este fallo", "este error",
+        "información detallada", "sin limites", "sin límites",
+        "todo lo que averigues", "que averigues",
     ]
     is_feedback = False
     prompt_lower = req.prompt.lower()
