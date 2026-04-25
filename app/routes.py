@@ -1,4 +1,4 @@
-import asyncio
+mport asyncio
 import hmac, hashlib
 import os, time, base64, io, json, re, uuid, httpx
 from datetime import datetime, timezone
@@ -92,6 +92,9 @@ def check_rate_limit(ip: str, max_per_minute: int = 20) -> bool:
 
 # ── CACHÉ DE RESPUESTAS ───────────────────────────────────────────────────────
 _response_cache: dict = {}  # hash -> (result, timestamp)
+
+# ── CACHÉ DE ARCHIVOS (definido aquí para evitar NameError en generate_music_smart) ──
+_file_cache: dict = {}  # token -> (bytes, filename, mime, timestamp)
 
 def get_cached_response(prompt: str, mode: str) -> str | None:
     """Retorna respuesta cacheada si existe y tiene menos de 1 hora."""
@@ -984,7 +987,6 @@ async def generate_video_smart(
     FAL_ENDPOINTS = {
         "kling25pro": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
         "kling26pro": "fal-ai/kling-video/v2.6/pro/text-to-video",
-    }o/text-to-video",
     }
     endpoint = FAL_ENDPOINTS.get(model_key, FAL_ENDPOINTS["kling25pro"])
     price_info = VIDEO_PRICES.get((model_key, duration_s), VIDEO_PRICES[("kling25pro", 5)])
@@ -1434,7 +1436,7 @@ async def deep_search(query: str) -> str:
 
 from app.file_generator import generate_excel, generate_docx, generate_pdf, FILE_SYSTEM_PROMPTS
 
-_file_cache: dict = {}  # token -> (bytes, filename, mime, timestamp)
+# _file_cache ya definido al inicio del módulo (línea ~94)
 
 def cache_file(file_bytes, filename, mime):
     token = str(uuid.uuid4())
@@ -1642,7 +1644,7 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
         is_feedback = True
         print(f"📝 Feedback registrado — se enviará análisis en background")
 
-    img_url = file_url = file_type = file_name = tts_url = result = video_url = ""
+    img_url = file_url = file_type = file_name = tts_url = result = video_url = music_url = ""
     label = "orquesta · llama 3.3"   # default siempre definido
     system = get_system(req.mode, username, req.history)
     is_pro = user.get("plan") == "pro" if user else False
@@ -1812,9 +1814,7 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
         except Exception:
             pass
 
-    # music_url: si sound_gen tuvo éxito, está en tts_url (caché local)
-    # Si falló el caché, music_url tiene la URL directa
-    _music_url = music_url if task == "sound_gen" and "music_url" in dir() else ""
+    # music_url ya está definida en el scope local (inicializada como "" arriba)
 
     # Disparar análisis de auto-mejoramiento DESPUÉS de responder al usuario
     if is_feedback:
@@ -1825,7 +1825,7 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
         latency_ms=int((time.time()-t0)*1000),
         image_url=img_url, file_url=file_url, file_type=file_type,
         file_name=file_name, tts_url=tts_url, video_url=video_url,
-        music_url=_music_url,
+        music_url=music_url,
         is_pro=is_pro,
         daily_remaining=daily_remaining,
         video_credits_remaining=video_credits_remaining,
@@ -3434,3 +3434,8 @@ async def status():
         "file_generation": True,
         "tts": bool(OPENAI_KEY)
     }
+
+@router.get("/health")
+async def health():
+    """Healthcheck endpoint requerido por Railway para verificar que el servidor está activo."""
+    return {"status": "ok", "service": "orquesta-api"}
