@@ -608,7 +608,21 @@ async def call_gemini_vision(prompt, b64, mime):
     for model in models:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
-            payload = {"contents":[{"parts":[{"inline_data":{"mime_type":mime,"data":b64}},{"text":prompt}]}],"generationConfig":{"maxOutputTokens":4096,"temperature":0.3}}
+            # Agregar una instrucción del sistema para guiar al modelo y evitar respuestas fuera de su alcance
+            system_instruction = "Eres un asistente de IA enfocado en analizar y describir imágenes. No puedes generar planillas, editar fotos ni realizar acciones fuera de tu capacidad de comprensión visual."
+            
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": system_instruction},
+                            {"inline_data": {"mime_type": mime, "data": b64}},
+                            {"text": prompt}
+                        ]
+                    }
+                ],
+                "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.3}
+            }
             async with httpx.AsyncClient(timeout=45) as c:
                 r = await c.post(url, json=payload)
                 d = r.json()
