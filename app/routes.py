@@ -984,6 +984,7 @@ async def generate_video_smart(
     FAL_ENDPOINTS = {
         "kling25pro": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
         "kling26pro": "fal-ai/kling-video/v2.6/pro/text-to-video",
+    }o/text-to-video",
     }
     endpoint = FAL_ENDPOINTS.get(model_key, FAL_ENDPOINTS["kling25pro"])
     price_info = VIDEO_PRICES.get((model_key, duration_s), VIDEO_PRICES[("kling25pro", 5)])
