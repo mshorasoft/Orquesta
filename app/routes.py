@@ -608,21 +608,7 @@ async def call_gemini_vision(prompt, b64, mime):
     for model in models:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
-            # Agregar una instrucción del sistema para guiar al modelo y evitar respuestas fuera de su alcance
-            system_instruction = "Eres un asistente de IA enfocado en analizar y describir imágenes. No puedes generar planillas, editar fotos ni realizar acciones fuera de tu capacidad de comprensión visual."
-            
-            payload = {
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": system_instruction},
-                            {"inline_data": {"mime_type": mime, "data": b64}},
-                            {"text": prompt}
-                        ]
-                    }
-                ],
-                "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.3}
-            }
+            payload = {"contents":[{"parts":[{"inline_data":{"mime_type":mime,"data":b64}},{"text":prompt}]}],"generationConfig":{"maxOutputTokens":4096,"temperature":0.3}}
             async with httpx.AsyncClient(timeout=45) as c:
                 r = await c.post(url, json=payload)
                 d = r.json()
@@ -1824,7 +1810,8 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
     if task == "video_gen" and user:
         try:
             vc = await get_video_credits(user)
-            video_credits_remaining = vc.get("available", -1)
+            # get_video_credits retorna balance_usd, no 'available'
+            video_credits_remaining = round(float(vc.get("balance_usd", 0.0)), 2)
         except Exception:
             pass
 
@@ -2142,8 +2129,49 @@ async def mercadopago_webhook(request: Request):
                 auth_id  = metadata.get("auth_id", "")
                 plan     = metadata.get("plan", "pro_monthly")
                 ext_ref  = payment.get("external_reference", "")
+                amount   = float(payment.get("transaction_amount", 0))
 
-                if (auth_id or ext_ref) and supabase:
+                # ── VIDEO TOPUP: external_reference = "video_topup|user_id|pack_id|amount" ──
+                if ext_ref.startswith("video_topup|") and supabase:
+                    parts = ext_ref.split("|")
+                    vt_user_id = parts[1] if len(parts) > 1 else ""
+                    vt_pack_id = parts[2] if len(parts) > 2 else ""
+                    if vt_user_id and amount > 0:
+                        try:
+                            # Verificar que no se acreditó antes (idempotencia)
+                            already = supabase.table("payment_events").select("id").eq("event_id", str(resource_id)).execute()
+                            if not already.data:
+                                # Acreditar saldo de video
+                                existing = supabase.table("video_balance").select("balance_usd").eq("user_id", vt_user_id).execute()
+                                if existing.data:
+                                    new_bal = round(float(existing.data[0].get("balance_usd", 0)) + amount, 4)
+                                    supabase.table("video_balance").update({
+                                        "balance_usd": new_bal,
+                                        "updated_at": datetime.now(timezone.utc).isoformat()
+                                    }).eq("user_id", vt_user_id).execute()
+                                else:
+                                    supabase.table("video_balance").insert({
+                                        "user_id": vt_user_id,
+                                        "balance_usd": round(amount, 4),
+                                        "updated_at": datetime.now(timezone.utc).isoformat()
+                                    }).execute()
+                                # Registrar evento para idempotencia
+                                supabase.table("payment_events").insert({
+                                    "provider":    "mercadopago",
+                                    "event_type":  "video_topup.webhook",
+                                    "event_id":    str(resource_id),
+                                    "amount":      int(amount * 100),
+                                    "currency":    payment.get("currency_id", "USD"),
+                                    "plan":        vt_pack_id or "video_topup",
+                                    "status":      "success",
+                                    "raw_payload": payment,
+                                }).execute()
+                                print(f"✅ Webhook MP: video_topup acreditado ${amount} USD → user {vt_user_id[:8]}")
+                        except Exception as ve:
+                            print(f"Error acreditando video_topup en webhook: {ve}")
+
+                # ── MEMBRESÍA PRO: flujo normal ────────────────────────────────
+                elif (auth_id or ext_ref) and supabase:
                     if not auth_id:
                         user_r = supabase.table("users").select("auth_id").eq("id", ext_ref).single().execute()
                         if user_r.data: auth_id = user_r.data["auth_id"]
@@ -2159,7 +2187,7 @@ async def mercadopago_webhook(request: Request):
                             "provider":   "mercadopago",
                             "event_type": "payment.approved",
                             "event_id":   str(resource_id),
-                            "amount":     int(payment.get("transaction_amount", 0) * 100),
+                            "amount":     int(amount * 100),
                             "currency":   payment.get("currency_id", "ARS"),
                             "plan":       plan,
                             "status":     "success",
