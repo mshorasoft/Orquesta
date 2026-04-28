@@ -2834,81 +2834,144 @@ async def approve_improvement(proposal_id: str):
     applied = False
     error_msg = ""
 
-    # Aplicar el cambio en GitHub si hay old_code y new_code
     old_code = proposal.get("old_code", "")
     new_code = proposal.get("new_code", "")
+    description = proposal.get("description", "")
 
-    if old_code and new_code and GITHUB_TOKEN:
+    if GITHUB_TOKEN:
         try:
             current_content = await get_current_routes_content()
-            if current_content and old_code.strip() in current_content:
-                # ── CASO 1: Match exacto ──────────────────────────────────────
-                updated_content = current_content.replace(old_code.strip(), new_code.strip(), 1)
-                commit_msg = f"Auto-mejora #{proposal_id}: {proposal.get('description','mejora automática')}"
-                applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
-                if applied:
-                    print(f"✅ Cambio aplicado en GitHub (match exacto): {proposal_id}")
-                else:
-                    error_msg = "Commit bloqueado — el new_code generado tiene errores de sintaxis. Revisá los logs de Railway."
-
-            elif current_content:
-                # ── CASO 2: Match difuso por firma de función ─────────────────
-                fuzzy_applied = False
-                func_signatures = re.findall(
-                    r'(?:async def|def)\s+\w+\s*\([^)]*\)\s*(?:->[^:]+)?:',
-                    old_code.strip()
-                )
-                if func_signatures:
-                    func_sig = func_signatures[0]
-                    sig_pos = current_content.find(func_sig)
-                    if sig_pos >= 0:
-                        block_end = current_content.find('\nasync def ', sig_pos + 10)
-                        if block_end == -1:
-                            block_end = current_content.find('\ndef ', sig_pos + 10)
-                        if block_end == -1:
-                            block_end = sig_pos + 1500
-                        current_func_block = current_content[sig_pos:block_end]
-                        updated_content = current_content.replace(current_func_block, new_code.strip(), 1)
-                        commit_msg = f"Auto-mejora #{proposal_id} (fuzzy): {proposal.get('description','mejora automática')}"
-                        fuzzy_applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
-                        if fuzzy_applied:
-                            applied = True
-                            print(f"✅ Cambio aplicado en GitHub (match difuso): {proposal_id}")
-                        else:
-                            error_msg = "Commit bloqueado — el new_code tiene errores de sintaxis (match difuso). Revisá los logs."
-
-                if not fuzzy_applied:
-                    # ── CASO 3: Sin match — documentar como comentario ────────
-                    # Construir las líneas comentadas fuera del f-string (compatible Python 3.11)
-                    old_commented = "\n".join("# " + l for l in old_code.strip()[:400].splitlines())
-                    new_commented = "\n".join("# " + l for l in new_code.strip()[:400].splitlines())
-                    improvement_note = f"""
-# ── AUTO-MEJORA #{proposal_id} (PENDIENTE — no se pudo aplicar automáticamente) ──
-# Descripción: {proposal.get('description','')}
-# Fecha: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
-# MOTIVO: fragmento old_code no encontrado en el archivo actual (puede haber cambiado)
-# ACCIÓN REQUERIDA: aplicar el siguiente cambio manualmente
-# ANTES:
-{old_commented}
-# DESPUÉS:
-{new_commented}
-# ─────────────────────────────────────────────────────────────────────────────
-"""
-                    updated_content = current_content + improvement_note
-                    commit_msg = f"Auto-mejora #{proposal_id} (doc-pendiente): {proposal.get('description','')}"
-                    doc_committed = await apply_github_change("app/routes.py", updated_content, commit_msg)
-                    # applied queda en False — esto NO es una mejora aplicada
-                    if doc_committed:
-                        error_msg = "⚠️ No se encontró el fragmento exacto en el código actual — la mejora fue documentada como comentario en routes.py pero NO se aplicó el fix. Revisá manualmente."
-                        print(f"⚠️ Mejora documentada (no aplicada): {proposal_id}")
-                    else:
-                        error_msg = "❌ No se pudo hacer commit ni documentar la mejora. Verificá el GITHUB_TOKEN."
+            if not current_content:
+                error_msg = "❌ No se pudo obtener el código actual de GitHub."
             else:
-                error_msg = "❌ No se pudo obtener el código actual de GitHub. Verificá el GITHUB_TOKEN y el repo."
-                print(f"⚠️ {error_msg}")
+                # ── ESTRATEGIA 1: Match exacto ────────────────────────────────
+                if old_code and old_code.strip() in current_content:
+                    updated_content = current_content.replace(old_code.strip(), new_code.strip(), 1)
+                    applied = await apply_github_change("app/routes.py", updated_content,
+                        f"Auto-mejora #{proposal_id}: {description}")
+                    if applied:
+                        print(f"✅ Estrategia 1 (exacto): {proposal_id}")
+                    else:
+                        error_msg = "Commit bloqueado — new_code con errores de sintaxis."
+
+                # ── ESTRATEGIA 2: Claude API regenera el fix en tiempo real ───
+                # Lee el archivo ACTUAL de GitHub y aplica el fix sin depender del old_code guardado
+                if not applied and ANTHROPIC_KEY and description:
+                    print(f"🤖 Estrategia 2: Claude API regenera fix sobre archivo actual...")
+                    try:
+                        # Encontrar la sección relevante del archivo actual
+                        search_map_local = [
+                            (["imagen","image","vision","foto"], "async def generate_image_smart"),
+                            (["video","kling","fal","mp4"], "async def generate_video_smart"),
+                            (["audio","music","sound","cancion"], "async def generate_music_smart"),
+                            (["classify","clasificad","task","pdf","excel"], "def classify"),
+                            (["feedback","mejora","autorepar"], "async def analyze_and_propose_improvements"),
+                            (["webhook","mercadopago","pago"], "async def mercadopago_webhook"),
+                            (["orchestrat","orquest"], "async def orchestrate"),
+                            (["tts","voz"], "async def call_openai_tts"),
+                        ]
+                        func_to_fix = ""
+                        desc_lower = description.lower()
+                        for keywords, func_name in search_map_local:
+                            if any(k in desc_lower for k in keywords):
+                                idx = current_content.find(func_name)
+                                if idx >= 0:
+                                    func_to_fix = current_content[idx:idx+1500]
+                                    break
+                        if not func_to_fix:
+                            func_to_fix = current_content[:1200]
+
+                        claude_payload = {
+                            "model": "claude-sonnet-4-6",
+                            "max_tokens": 2000,
+                            "messages": [{
+                                "role": "user",
+                                "content": (
+                                    f"Sos un experto en Python/FastAPI. Aplicá este fix en routes.py:\n\n"
+                                    f"PROBLEMA: {description}\n\n"
+                                    f"CÓDIGO ACTUAL DE ESA SECCIÓN:\n```python\n{func_to_fix}\n```\n\n"
+                                    f"REFERENCIA DEL FIX ORIGINAL:\n"
+                                    f"ANTES: {old_code[:400] if old_code else 'ver descripción'}\n"
+                                    f"DESPUÉS: {new_code[:400] if new_code else 'generá el fix'}\n\n"
+                                    f"INSTRUCCIÓN: Devolvé EXACTAMENTE en este formato:\n"
+                                    f"OLD_CODE_START\n(fragmento exacto a reemplazar del código actual)\nOLD_CODE_END\n"
+                                    f"NEW_CODE_START\n(código corregido Python 3.11, misma indentación, sin markdown)\nNEW_CODE_END"
+                                )
+                            }]
+                        }
+                        async with httpx.AsyncClient(timeout=45) as hc:
+                            cr = await hc.post(
+                                "https://api.anthropic.com/v1/messages",
+                                headers={
+                                    "x-api-key": ANTHROPIC_KEY,
+                                    "anthropic-version": "2023-06-01",
+                                    "content-type": "application/json"
+                                },
+                                json=claude_payload
+                            )
+                        if cr.is_success:
+                            ct = cr.json()["content"][0]["text"]
+                            if "OLD_CODE_START" in ct and "NEW_CODE_START" in ct:
+                                c_old = ct.split("OLD_CODE_START")[1].split("OLD_CODE_END")[0].strip()
+                                c_new = ct.split("NEW_CODE_START")[1].split("NEW_CODE_END")[0].strip()
+                                if c_old and c_new and c_old in current_content:
+                                    updated_content = current_content.replace(c_old, c_new, 1)
+                                    applied = await apply_github_change("app/routes.py", updated_content,
+                                        f"Auto-mejora #{proposal_id} (claude-regen): {description}")
+                                    if applied:
+                                        print(f"✅ Estrategia 2 (Claude regen): {proposal_id}")
+                                    else:
+                                        error_msg = "Claude regeneró el fix pero falló validación de sintaxis."
+                                else:
+                                    error_msg = "Claude no encontró el fragmento en el archivo actual."
+                            else:
+                                error_msg = "Claude no devolvió el formato OLD_CODE_START/END."
+                        else:
+                            error_msg = f"Claude API error: {cr.status_code}"
+                    except Exception as ce:
+                        error_msg = f"Error en Claude regen: {str(ce)[:100]}"
+                        print(f"❌ {error_msg}")
+
+                # ── ESTRATEGIA 3: Match difuso por firma de función ───────────
+                if not applied and old_code:
+                    func_sigs = re.findall(r'(?:async def|def)\s+\w+\s*\([^)]*\)\s*(?:->[^:]+)?:', old_code.strip())
+                    if func_sigs:
+                        sig_pos = current_content.find(func_sigs[0])
+                        if sig_pos >= 0:
+                            block_end = current_content.find('\nasync def ', sig_pos + 10)
+                            if block_end == -1: block_end = current_content.find('\ndef ', sig_pos + 10)
+                            if block_end == -1: block_end = sig_pos + 1500
+                            current_func = current_content[sig_pos:block_end]
+                            updated_content = current_content.replace(current_func, new_code.strip(), 1)
+                            applied = await apply_github_change("app/routes.py", updated_content,
+                                f"Auto-mejora #{proposal_id} (fuzzy): {description}")
+                            if applied:
+                                print(f"✅ Estrategia 3 (fuzzy): {proposal_id}")
+                            else:
+                                error_msg = "Commit bloqueado en match difuso — errores de sintaxis."
+
+                # ── ESTRATEGIA 4: Documentar (último recurso) ─────────────────
+                if not applied:
+                    old_commented = "\n".join("# " + l for l in (old_code or description)[:400].splitlines())
+                    new_commented = "\n".join("# " + l for l in (new_code or "Ver descripción arriba")[:400].splitlines())
+                    note = (
+                        f"\n# ── AUTO-MEJORA #{proposal_id} (PENDIENTE MANUAL) ──\n"
+                        f"# Desc: {description}\n"
+                        f"# Fecha: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+                        f"# ANTES:\n{old_commented}\n"
+                        f"# DESPUÉS:\n{new_commented}\n"
+                        f"# ────────────────────────────────────────────────────\n"
+                    )
+                    doc_ok = await apply_github_change("app/routes.py", current_content + note,
+                        f"Auto-mejora #{proposal_id} (doc-pendiente): {description}")
+                    if doc_ok:
+                        error_msg = "⚠️ No se pudo aplicar en ninguna estrategia — documentada como comentario. Subí el routes_v5_final.py de Claude para el fix real."
+                    else:
+                        error_msg = "❌ No se pudo hacer commit. Verificá el GITHUB_TOKEN."
+
         except Exception as e:
             error_msg = str(e)[:200]
-            print(f"❌ Error aplicando cambio: {e}")
+            print(f"❌ Error en approve_improvement: {e}")
 
     ts_fmt = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     desc = proposal.get("description","Sin descripción")
