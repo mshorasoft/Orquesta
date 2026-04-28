@@ -2605,18 +2605,14 @@ async def get_current_routes_content() -> str:
         print(f"Error obteniendo routes.py: {e}")
     return ""
 
-async def analyze_and_propose_improvements():
-    """
-    Analiza errores recientes y propone mejoras.
-    Cascada: Gemini → Groq → fallback garantizado.
-    Siempre envía email si hay errores para reportar.
-    """
-    if not _error_log and not _feedback_log:
-        print("📋 Sin errores para analizar")
-        return None
-
-    top_error = _error_log[-1] if _error_log else _feedback_log[-1] if _feedback_log else {"endpoint": "general", "error": "feedback de usuario"}
-    recent = _error_log[-5:]
+top_error = _error_log[-1] if _error_log else _feedback_log[-1] if _feedback_log else {"endpoint": "general", "error": "feedback de usuario"}
+    
+    # Combinar _error_log y _feedback_log para el análisis de los errores recientes,
+    # asegurando que el feedback de usuario sea considerado en la propuesta de mejoras.
+    # Asumimos que los logs ya están ordenados cronológicamente por adición.
+    all_logs_for_recent_analysis = (_error_log or []) + (_feedback_log or [])
+    recent = all_logs_for_recent_analysis[-5:]
+    
     errores_txt = "\n".join([f"- {e['endpoint']}: {e['error'][:80]}" for e in recent])
 
     # Obtener código actual de routes.py para que la IA pueda proponer cambios reales
