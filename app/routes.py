@@ -400,17 +400,19 @@ VIDEO_GEN_KW = [
 IMAGE_GEN_KW = [
     "genera una imagen","generá una imagen","crea una imagen","creá una imagen",
     "dibuja","dibujá","ilustra","ilustrá","imagen de","foto de","fotografía de",
-    "generate image","create image","draw","make an image","picture of","render",
+    "generate image","create image","draw","make an image","picture of",
     "diseña","diseñá","hazme una imagen","create a photo","make a photo",
-    "quiero una imagen","quiero ver","mostrame","mostrarme","visualizá","visualiza",
-    "haceme una imagen","hacé una imagen","necesito una imagen","generame","generame una",
+    "quiero una imagen","mostrame una imagen","mostrarme una imagen",
+    "haceme una imagen","hacé una imagen","necesito una imagen",
     "foto de","pintura de","retrato de","ilustración de","arte de","artwork",
-    "imagina","imaginá","una foto","una imagen","un dibujo","un retrato",
-    # Patrones que causaban confusión con file_gen:
+    "imagina","imaginá","una foto de","una imagen de","un dibujo de","un retrato de",
+    # Patrones de contexto — solo matchean cuando hablan de imagen específicamente
     "que represente","que representa","represente","representa visualmente",
     "imagen que","foto que","visual de","visualmente","imagen para",
     "generarme una imagen","puedes generarme una imagen","podés generarme una imagen",
     "generame una imagen","generá una imagen","hacé una foto",
+    # NOTA: "generame" y "generame una" se REMOVIERON — son demasiado genéricas
+    # y causaban que "generame un video" se clasificara como image_gen
 ]
 IMAGE_EDIT_KW = [
     "modifica","modificá","cambia","cambiá","reemplaza","reemplazá","edita","editá",
@@ -571,23 +573,24 @@ def classify(prompt, mode, history=None):
             if any(k in recent_joined for k in ["imagen","foto","dall-e","pollinations","generada"]):
                 return "image_gen"
 
-    # ── PRIORIDAD ABSOLUTA: imagen explícita siempre gana sobre archivo ──────
-    # Hay que chequear esto ANTES de detect_file_type porque el historial de PDF
-    # puede contaminar el contexto y hacer que "imagen" se clasifique como "pdf"
+    # ── PRIORIDAD 1: VIDEO — debe ir ANTES que imagen ────────────────────────
+    # CRÍTICO: "generame un video" contiene "generame" que está en IMAGE_GEN_KW
+    # Si imagen va primero, "generame un video" → image_gen (BUG)
+    # La solución: video siempre tiene prioridad sobre imagen
+    has_video_intent = any(k in p for k in VIDEO_GEN_KW)
+    # Detección extra: "video" + verbo de generación explícito
+    gen_verbs = ["genera","generá","crea","creá","hacé","hace","quiero","necesito",
+                 "dame","haceme","generame","fagas","hagas","generes","podés","puedes","podes"]
+    if not has_video_intent and "video" in p and any(v in p for v in gen_verbs):
+        has_video_intent = True
+    if has_video_intent: return "video_gen"
+
+    # ── PRIORIDAD 2: IMAGEN — después de confirmar que NO es video ────────────
     if any(k in p for k in IMAGE_GEN_KW): return "image_gen"
 
     ftype = detect_file_type(p)
     if ftype: return f"file_gen_{ftype}"
-
-    has_video_intent = any(k in p for k in VIDEO_GEN_KW)
-    # "video" solo + verbo de generación explícito también cuenta
-    gen_verbs = ["genera","generá","crea","creá","hacé","hace","quiero","necesito","dame","haceme","generame","fagas","hagas","generes"]
-    if not has_video_intent and "video" in p and any(v in p for v in gen_verbs):
-        has_video_intent = True
-
-    if has_video_intent: return "video_gen"
     if is_music_request(p): return "sound_gen"
-    # image_gen ya fue chequeado antes de detect_file_type (prioridad absoluta)
     if any(k in p for k in TRANSLATE_KW): return "translate"
     if " vs " in p or " contra " in p: return "realtime"
     if any(x in p for x in ["cómo salió","como salio","cómo quedó","qué pasó","que paso"]): return "realtime"
