@@ -285,6 +285,174 @@ a{color:var(--em-mid);text-decoration:none}
 .music-progress-bar{width:100%;height:3px;background:var(--border);border-radius:2px;cursor:pointer;position:relative}
 .music-progress-fill{height:100%;background:var(--em);border-radius:2px;width:0%;transition:width .2s linear}
 .music-time{display:flex;justify-content:space-between;font-size:10px;color:var(--text3);font-family:var(--font-mono)}
+
+/* ── ACCESIBILIDAD ─────────────────────────────────────────────── */
+
+/* Clases aplicadas al <html> desde JS */
+html.acc-large-text  { font-size: 20px !important; }
+html.acc-larger-text { font-size: 24px !important; }
+html.acc-high-contrast {
+  --em: #00FF88 !important;
+  --text: #FFFFFF !important;
+  --text2: #DDDDDD !important;
+  --surface: #000000 !important;
+  --surface2: #111111 !important;
+  --surface3: #1a1a1a !important;
+  --carbon: #000000 !important;
+  --border: rgba(255,255,255,0.4) !important;
+  --border2: rgba(255,255,255,0.6) !important;
+}
+html.acc-dyslexia * {
+  font-family: 'Arial', sans-serif !important;
+  letter-spacing: 0.08em !important;
+  word-spacing: 0.18em !important;
+  line-height: 1.9 !important;
+}
+html.acc-reduced-motion * {
+  animation: none !important;
+  transition: none !important;
+}
+html.acc-focus-visible *:focus {
+  outline: 3px solid var(--em) !important;
+  outline-offset: 3px !important;
+  border-radius: 4px !important;
+}
+
+/* Botón flotante de accesibilidad */
+#acc-fab {
+  position: fixed;
+  bottom: 90px;
+  right: 18px;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--surface3);
+  border: 1.5px solid var(--border2);
+  color: var(--text);
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 999;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+  transition: transform 0.18s, background 0.18s;
+}
+#acc-fab:hover { background: var(--em); transform: scale(1.1); }
+#acc-fab:focus { outline: 3px solid var(--em); }
+
+/* Panel de accesibilidad */
+#acc-panel {
+  position: fixed;
+  bottom: 148px;
+  right: 14px;
+  width: 290px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 16px;
+  padding: 18px 16px 14px;
+  z-index: 1000;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+}
+#acc-panel.open { display: flex; }
+
+#acc-panel h3 {
+  font-family: var(--font-display);
+  font-size: 15px;
+  color: var(--em);
+  margin: 0 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.acc-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text3);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.acc-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.acc-btn {
+  flex: 1;
+  min-width: 60px;
+  padding: 7px 8px;
+  border-radius: 9px;
+  border: 1.5px solid var(--border2);
+  background: var(--surface3);
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-body);
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s, border-color 0.15s;
+  line-height: 1.3;
+}
+.acc-btn:hover { background: var(--em); border-color: var(--em); color: #000; }
+.acc-btn.active { background: var(--em); border-color: var(--em); color: #000; font-weight: 700; }
+.acc-btn:focus { outline: 2px solid var(--em); outline-offset: 2px; }
+
+/* Slider de tamaño de texto */
+.acc-slider-wrap { display: flex; align-items: center; gap: 8px; }
+.acc-slider-wrap span { font-size: 11px; color: var(--text2); min-width: 24px; text-align: center; }
+#acc-font-slider {
+  flex: 1;
+  height: 4px;
+  accent-color: var(--em);
+  cursor: pointer;
+}
+.acc-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0;
+}
+.acc-close {
+  align-self: flex-end;
+  background: none;
+  border: none;
+  color: var(--text3);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+.acc-close:hover { color: var(--coral); }
+
+/* Estilos de foco mejorado para lectores de pantalla */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  border: 0;
+}
+
+/* Skip to content link */
+#skip-to-content {
+  position: absolute;
+  top: -60px;
+  left: 8px;
+  background: var(--em);
+  color: #000;
+  font-weight: 700;
+  padding: 8px 16px;
+  border-radius: 8px;
+  z-index: 9999;
+  font-size: 14px;
+  transition: top 0.2s;
+}
+#skip-to-content:focus { top: 8px; }
 </style>
 </head>
 <body>
@@ -431,7 +599,7 @@ a{color:var(--em-mid);text-decoration:none}
         <button class="fp-rm" onclick="rmFile()">×</button>
       </div>
       <div class="input-top">
-        <textarea id="prompt-input" placeholder="Preguntá, generá imágenes, videos IA, Excel/Word/PDF, buscá en internet..." rows="1" onkeydown="onKey(event)" oninput="resize(this)" autocomplete="off" spellcheck="false"></textarea>
+        <textarea id="prompt-input" aria-label="Escribí tu mensaje a Orquesta" role="textbox" aria-multiline="true" placeholder="Preguntá, generá imágenes, videos IA, Excel/Word/PDF, buscá en internet..." rows="1" onkeydown="onKey(event)" oninput="resize(this)" autocomplete="off" spellcheck="false"></textarea>
         <div class="ibtns">
           <button class="ibtn" id="mic-btn" onclick="toggleMic()">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="5" y="1" width="6" height="9" rx="3" stroke="var(--text2)" stroke-width="1.3"/><path d="M2 8a6 6 0 0012 0" stroke="var(--text2)" stroke-width="1.3" stroke-linecap="round" fill="none"/><line x1="8" y1="14" x2="8" y2="16" stroke="var(--text2)" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -440,7 +608,7 @@ a{color:var(--em-mid);text-decoration:none}
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M13.5 7.5l-6 6a4 4 0 01-5.66-5.66l6.5-6.5a2.5 2.5 0 013.54 3.54L5.5 11.5a1 1 0 01-1.41-1.41L10 4" stroke="var(--text2)" stroke-width="1.3" stroke-linecap="round" fill="none"/></svg>
           </button>
           <input type="file" id="file-input" accept="image/*,.pdf,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.docx,.xlsx,.sql,.yaml,.log" onchange="onFile(event)"/>
-          <button id="send-btn" onclick="send()">
+          <button id="send-btn" aria-label="Enviar mensaje" onclick="send()">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 8L14 8M14 8L9 3M14 8L9 13" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
@@ -949,7 +1117,7 @@ function buildAudioPlayer(audioUrl){
 // ══════════════════════════════════════════════════════════════
 //  ADD MESSAGE
 // ══════════════════════════════════════════════════════════════
-function addMsg(role,content,meta,imgUrl,filename,fileData,ttsUrl,videoUrl,musicUrl,isUpgrade){
+function addMsg(role,content,meta,imgUrl,filename,fileData,ttsUrl,videoUrl,isUpgrade){
   document.getElementById('welcome')?.remove();
   const wrap=document.getElementById('messages');
   const div=document.createElement('div'); div.className=`message ${role}`;
@@ -977,6 +1145,7 @@ function addMsg(role,content,meta,imgUrl,filename,fileData,ttsUrl,videoUrl,music
     } else {
       const cw=document.createElement('div'); cw.className='bubble-content';
       const td=document.createElement('div'); td.innerHTML=fmt(content); cw.appendChild(td);
+    if(role==='ai' && content && content !== 'typing') accSpeakText(content.substring(0,600));
       if(fileData?.url) cw.appendChild(fileCard(fileData.url,fileData.type,fileData.name));
       bubble.appendChild(cw);
       if(role==='ai'&&!imgUrl&&!fileData&&content.length>600){
@@ -1020,11 +1189,6 @@ function addMsg(role,content,meta,imgUrl,filename,fileData,ttsUrl,videoUrl,music
         vw.innerHTML=`<div class="video-actions"><a href="${dlUrl}" download="orquesta_video.mp4" class="video-link-btn">⬇️ Descargar MP4</a><a href="${videoUrl}" target="_blank" class="video-link-btn" style="margin-left:6px;">▶️ Ver video</a></div>`;
       };
       vid.src=videoUrl; bubble.appendChild(vw);
-    }
-    if(musicUrl&&!isUpgrade){
-      const mw=document.createElement('div'); mw.className='music-player-wrap';
-      const mp=createMusicPlayer(musicUrl,'🎵 Canción generada','orquesta · música');
-      mw.appendChild(mp); bubble.appendChild(mw);
     }
     if(ttsUrl&&role==='ai'&&!isUpgrade){
       const player=buildAudioPlayer(ttsUrl);
@@ -1572,7 +1736,7 @@ async function send(){
 
 **Plan Gratis:** solo conversaciones de texto (hasta 20 preguntas).
 **Plan Pro $9/mes:** imágenes IA, videos IA, Excel, Word, PDF, voz, búsqueda web y mensajes ilimitados.`;
-    addMsg('ai', msg, null, '', null, null, '', '', '', true);
+    addMsg('ai', msg, null, '', null, null, '', '', true);
     console.log('BLOQUEADO POR FRONTEND');
     return;
   }
@@ -1584,7 +1748,7 @@ async function send(){
     const msg = `🔒 Alcanzaste el límite de **${FREE_LIMIT} preguntas** del Plan Gratis.
 
 Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y más.`;
-    addMsg('ai', msg, null, '', null, null, '', '', '', true);
+    addMsg('ai', msg, null, '', null, null, '', '', true);
     return;
   }
   if(!convId) await createConversation();
@@ -1643,16 +1807,16 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     console.log('userIsPro en respuesta:', userIsPro);
     if(userIsPro){
       // Pro: mostrar siempre la respuesta del backend sin ningún filtro
-      addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',data.music_url||'',false);
+      addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
       activeHistory.push({role:'assistant',content:data.result});
     } else {
       // Free: mostrar upgrade banner si el backend lo indica
       const serverBlocked = (data.upgrade_banner && data.upgrade_banner.length > 0) ||
         (data.latency_ms < 10 && ['esta funcion requiere','plan pro'].some(t=>(data.result||'').toLowerCase().includes(t)));
       if(serverBlocked){
-        addMsg('ai','🔒 Esta función requiere **Plan Pro**.',null,'',null,null,'','','',true);
+        addMsg('ai','🔒 Esta función requiere **Plan Pro**.',null,'',null,null,'','',true);
       } else {
-        addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',data.music_url||'',false);
+        addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
         activeHistory.push({role:'assistant',content:data.result});
       }
     }
@@ -1674,6 +1838,266 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
   loading=false; document.getElementById('send-btn').disabled=false;
   document.getElementById('prompt-input').focus();
 }
+
+// ── ACCESIBILIDAD ────────────────────────────────────────────────────────────
+
+const ACC_STORAGE_KEY = 'orq_acc_v1';
+let accState = {
+  fontSize: 16,
+  highContrast: false,
+  dyslexia: false,
+  reducedMotion: false,
+  focusVisible: false,
+  ttsAuto: false,
+};
+let _accSpeechUtterance = null;
+
+function accSave() {
+  try { localStorage.setItem(ACC_STORAGE_KEY, JSON.stringify(accState)); } catch(e){}
+}
+
+function accLoad() {
+  try {
+    const saved = localStorage.getItem(ACC_STORAGE_KEY);
+    if(saved) {
+      accState = Object.assign(accState, JSON.parse(saved));
+      accApplyAll();
+    }
+  } catch(e){}
+}
+
+function accApplyAll() {
+  // Font size
+  document.documentElement.style.fontSize = accState.fontSize + 'px';
+  const slider = document.getElementById('acc-font-slider');
+  if(slider) slider.value = accState.fontSize;
+
+  // Clases CSS
+  const map = {
+    highContrast: 'acc-high-contrast',
+    dyslexia:     'acc-dyslexia',
+    reducedMotion:'acc-reduced-motion',
+    focusVisible: 'acc-focus-visible',
+  };
+  for(const [key, cls] of Object.entries(map)) {
+    document.documentElement.classList.toggle(cls, accState[key]);
+  }
+
+  // Botones activos
+  const btnMap = {
+    highContrast: 'acc-btn-contrast',
+    dyslexia:     'acc-btn-dyslexia',
+    reducedMotion:'acc-btn-motion',
+    focusVisible: 'acc-btn-focus',
+    ttsAuto:      'acc-btn-tts-auto',
+  };
+  for(const [key, btnId] of Object.entries(btnMap)) {
+    const btn = document.getElementById(btnId);
+    if(btn) {
+      btn.classList.toggle('active', accState[key]);
+      btn.setAttribute('aria-pressed', String(accState[key]));
+    }
+  }
+}
+
+function toggleAccPanel() {
+  const panel = document.getElementById('acc-panel');
+  const fab   = document.getElementById('acc-fab');
+  const open  = panel.classList.toggle('open');
+  fab.setAttribute('aria-expanded', String(open));
+  if(open) {
+    // Foco en el primer elemento interactivo del panel
+    setTimeout(() => { const s = document.getElementById('acc-font-slider'); if(s) s.focus(); }, 50);
+  }
+}
+
+function accSetFontSize(val) {
+  accState.fontSize = parseInt(val);
+  document.documentElement.style.fontSize = val + 'px';
+  accSave();
+}
+
+function accToggle(feature, btnId) {
+  const keyMap = {
+    'high-contrast':  'highContrast',
+    'dyslexia':       'dyslexia',
+    'reduced-motion': 'reducedMotion',
+    'focus-visible':  'focusVisible',
+  };
+  const key = keyMap[feature];
+  if(!key) return;
+  accState[key] = !accState[key];
+  document.documentElement.classList.toggle('acc-' + feature, accState[key]);
+  const btn = document.getElementById(btnId);
+  if(btn) {
+    btn.classList.toggle('active', accState[key]);
+    btn.setAttribute('aria-pressed', String(accState[key]));
+  }
+  accSave();
+  accAnnounce(accState[key] ? feature + ' activado' : feature + ' desactivado');
+}
+
+function accToggleTTSAuto() {
+  accState.ttsAuto = !accState.ttsAuto;
+  const btn = document.getElementById('acc-btn-tts-auto');
+  if(btn) {
+    btn.classList.toggle('active', accState.ttsAuto);
+    btn.setAttribute('aria-pressed', String(accState.ttsAuto));
+  }
+  accSave();
+  accAnnounce(accState.ttsAuto ? 'Lectura automática activada' : 'Lectura automática desactivada');
+}
+
+function accStopSpeech() {
+  if(window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
+function accSpeakText(text) {
+  if(!window.speechSynthesis || !accState.ttsAuto) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = 'es-AR';
+  utterance.rate = 0.95;
+  utterance.pitch = 1;
+  // Elegir voz en español si está disponible
+  const voices = window.speechSynthesis.getVoices();
+  const esVoice = voices.find(v => v.lang.startsWith('es'));
+  if(esVoice) utterance.voice = esVoice;
+  window.speechSynthesis.speak(utterance);
+}
+
+function accReset() {
+  accState = { fontSize:16, highContrast:false, dyslexia:false, reducedMotion:false, focusVisible:false, ttsAuto:false };
+  document.documentElement.style.fontSize = '16px';
+  ['acc-high-contrast','acc-dyslexia','acc-reduced-motion','acc-focus-visible'].forEach(cls => {
+    document.documentElement.classList.remove(cls);
+  });
+  accApplyAll();
+  accSave();
+  accAnnounce('Configuración de accesibilidad restaurada');
+}
+
+// ARIA live region para anuncios a lectores de pantalla
+function accAnnounce(msg) {
+  let region = document.getElementById('acc-live');
+  if(!region) {
+    region = document.createElement('div');
+    region.id = 'acc-live';
+    region.setAttribute('role', 'status');
+    region.setAttribute('aria-live', 'polite');
+    region.setAttribute('aria-atomic', 'true');
+    region.className = 'sr-only';
+    document.body.appendChild(region);
+  }
+  region.textContent = '';
+  setTimeout(() => { region.textContent = msg; }, 50);
+}
+
+// Cerrar panel con Escape
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape') {
+    const panel = document.getElementById('acc-panel');
+    if(panel && panel.classList.contains('open')) {
+      toggleAccPanel();
+      document.getElementById('acc-fab').focus();
+    }
+  }
+});
+
+// Cargar configuración guardada al iniciar
+document.addEventListener('DOMContentLoaded', () => {
+  accLoad();
+  // Pre-cargar voces de síntesis
+  if(window.speechSynthesis) {
+    window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+  }
+});
+// ─────────────────────────────────────────────────────────────────────────────
+
 </script>
+
+<!-- ── SKIP LINK (lectores de pantalla) ─────────────────────────── -->
+<a id="skip-to-content" href="#prompt-input" tabindex="0">Ir al chat ↓</a>
+
+<!-- ── BOTÓN FLOTANTE DE ACCESIBILIDAD ──────────────────────────── -->
+<button id="acc-fab" onclick="toggleAccPanel()" 
+  aria-label="Opciones de accesibilidad" 
+  aria-expanded="false"
+  aria-controls="acc-panel"
+  title="Accesibilidad">
+  ♿
+</button>
+
+<!-- ── PANEL DE ACCESIBILIDAD ───────────────────────────────────── -->
+<div id="acc-panel" role="dialog" aria-label="Opciones de accesibilidad" aria-modal="false">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
+    <h3>♿ Accesibilidad</h3>
+    <button class="acc-close" onclick="toggleAccPanel()" aria-label="Cerrar panel">×</button>
+  </div>
+
+  <!-- Tamaño de texto -->
+  <div>
+    <div class="acc-section-label">Tamaño de texto</div>
+    <div class="acc-slider-wrap">
+      <span aria-hidden="true">A</span>
+      <input type="range" id="acc-font-slider" min="14" max="26" value="16" step="1"
+        aria-label="Tamaño de fuente" oninput="accSetFontSize(this.value)">
+      <span aria-hidden="true" style="font-size:18px;">A</span>
+    </div>
+  </div>
+
+  <hr class="acc-divider">
+
+  <!-- Contraste -->
+  <div>
+    <div class="acc-section-label">Contraste y color</div>
+    <div class="acc-row">
+      <button class="acc-btn" id="acc-btn-contrast" onclick="accToggle('high-contrast','acc-btn-contrast')"
+        aria-pressed="false">🔆 Alto contraste</button>
+      <button class="acc-btn" id="acc-btn-dyslexia" onclick="accToggle('dyslexia','acc-btn-dyslexia')"
+        aria-pressed="false">📖 Dislexia</button>
+    </div>
+  </div>
+
+  <hr class="acc-divider">
+
+  <!-- Motor / interacción -->
+  <div>
+    <div class="acc-section-label">Interacción</div>
+    <div class="acc-row">
+      <button class="acc-btn" id="acc-btn-motion" onclick="accToggle('reduced-motion','acc-btn-motion')"
+        aria-pressed="false">⏸ Sin animaciones</button>
+      <button class="acc-btn" id="acc-btn-focus" onclick="accToggle('focus-visible','acc-btn-focus')"
+        aria-pressed="false">🔲 Foco visible</button>
+    </div>
+  </div>
+
+  <hr class="acc-divider">
+
+  <!-- Lectura de respuestas -->
+  <div>
+    <div class="acc-section-label">Lectura de respuestas (TTS)</div>
+    <div class="acc-row">
+      <button class="acc-btn" id="acc-btn-tts-auto" onclick="accToggleTTSAuto()"
+        aria-pressed="false">🔊 TTS automático</button>
+      <button class="acc-btn" onclick="accStopSpeech()" aria-label="Detener lectura">
+        ⏹ Detener</button>
+    </div>
+  </div>
+
+  <hr class="acc-divider">
+
+  <!-- Reset -->
+  <button class="acc-btn" onclick="accReset()" 
+    aria-label="Restaurar configuración por defecto"
+    style="width:100%;background:var(--surface);border-color:var(--coral);color:var(--coral);">
+    ↺ Restaurar todo
+  </button>
+
+  <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:4px;">
+    Configuración guardada automáticamente
+  </div>
+</div>
+
 </body>
 </html>
