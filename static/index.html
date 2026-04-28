@@ -256,7 +256,14 @@ a{color:var(--em-mid);text-decoration:none}
 .video-option-badge{position:absolute;top:6px;right:6px;background:rgba(29,158,117,.2);border:1px solid var(--em);border-radius:4px;padding:1px 5px;font-size:9px;color:var(--em);font-weight:600}
 .video-insufficient{background:rgba(216,90,48,.08);border:1px solid rgba(216,90,48,.3);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--coral);margin-bottom:12px;line-height:1.5}
 .video-topup-section{border-top:1px solid var(--border);padding-top:14px;margin-top:4px}
-.video-topup-title{font-size:11px;font-weight:600;color:var(--text2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:10px}
+.video-topup-title{font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.video-balance-badge{
+  display:inline-flex;align-items:center;gap:6px;
+  background:linear-gradient(135deg,rgba(29,158,117,0.15),rgba(29,158,117,0.05));
+  border:1px solid rgba(29,158,117,0.3);
+  color:var(--em);font-weight:700;font-size:13px;
+  padding:7px 14px;border-radius:20px;margin:4px 0 12px;
+}
 .video-packs-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:12px}
 .video-pack{background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:8px 10px;cursor:pointer;transition:all .15s;text-align:center}
 .video-pack:hover{border-color:var(--em);background:rgba(29,158,117,.06)}
@@ -1355,10 +1362,13 @@ function showVideoConfirmModal(confirmData) {
     const prices = (confirmData.prices && confirmData.prices.length > 0)
       ? confirmData.prices
       : [
-          { model_key:'kling25pro', duration_s:5,  user_price_usd:0.70, can_afford: balance>=0.70 },
-          { model_key:'kling25pro', duration_s:10, user_price_usd:1.40, can_afford: balance>=1.40 },
-          { model_key:'kling26pro', duration_s:5,  user_price_usd:1.40, can_afford: balance>=1.40 },
-          { model_key:'kling26pro', duration_s:10, user_price_usd:2.80, can_afford: balance>=2.80 },
+          // Precios por defecto si el backend no responde (2x markup sobre costo FAL)
+          { model_key:'veo31fast',    duration_s:8,  user_price_usd:1.60, badge:'MEJOR', detail:'Audio nativo · Google DeepMind', can_afford: balance>=1.60 },
+          { model_key:'seedance2fast',duration_s:5,  user_price_usd:0.70, badge:'AUDIO', detail:'ByteDance · Audio nativo',       can_afford: balance>=0.70 },
+          { model_key:'seedance2fast',duration_s:10, user_price_usd:1.40, badge:'AUDIO', detail:'ByteDance · Audio nativo',       can_afford: balance>=1.40 },
+          { model_key:'seedance2pro', duration_s:5,  user_price_usd:1.40, badge:'PRO',   detail:'ByteDance · HD · Audio nativo', can_afford: balance>=1.40 },
+          { model_key:'kling3',       duration_s:5,  user_price_usd:1.00, badge:'',      detail:'Kling 3.0 · Multi-shot · 1080p',can_afford: balance>=1.00 },
+          { model_key:'kling25pro',   duration_s:5,  user_price_usd:0.70, badge:'',      detail:'Kling 2.5 · 1080p · Sin audio', can_afford: balance>=0.70 },
         ];
 
     const affordable = prices.filter(p => p.can_afford);
@@ -1384,7 +1394,12 @@ function showVideoConfirmModal(confirmData) {
     const balBadge = document.createElement('div');
     balBadge.className = 'video-balance-badge';
     balBadge.id = 'vbal-badge';
-    balBadge.textContent = `💰 Saldo: $${balance.toFixed(2)} USD`;
+    const canAffordAny = prices.some(p => balance >= p.user_price_usd);
+    balBadge.innerHTML = `💰 Saldo: <strong>$${balance.toFixed(2)} USD</strong>&nbsp;&nbsp;${
+      canAffordAny
+        ? '<span style="color:#1D9E75;font-size:11px;">✓ Listo para generar</span>'
+        : '<span style="color:#EF9F27;font-size:11px;">⚠ Cargá créditos para generar</span>'
+    }`;
 
     // Opciones de modelo
     const optsLabel = document.createElement('div');
@@ -1398,10 +1413,31 @@ function showVideoConfirmModal(confirmData) {
       const opt = document.createElement('div');
       opt.className = 'video-option' + (i === 0 ? ' selected' : '');
       opt.style.opacity = p.can_afford ? '1' : '0.5';
+      // Nombre legible del modelo
+      const modelNames = {
+        'veo31fast':    'Veo 3.1 Fast',
+        'veo31':        'Veo 3.1 HD',
+        'seedance2fast':'Seedance 2.0 Fast',
+        'seedance2pro': 'Seedance 2.0 Pro',
+        'kling3':       'Kling 3.0',
+        'kling26pro':   'Kling 2.6 Pro',
+        'kling25pro':   'Kling 2.5 Pro',
+      };
+      const badgeColors = {
+        'MEJOR': 'background:#1D9E75;color:#000;',
+        'AUDIO': 'background:#8B7FE8;color:#fff;',
+        'PRO':   'background:#EF9F27;color:#000;',
+        '':      '',
+      };
+      const badge = p.badge || (p.model_key==='kling26pro'?'AUDIO':p.model_key==='veo31fast'?'MEJOR':'');
+      const badgeStyle = badgeColors[badge] || '';
+      const detail = p.detail || (p.model_key.includes('kling25')?'1080p · Sin audio':'1080p · Audio nativo');
+      const modelName = modelNames[p.model_key] || p.model_key;
+
       opt.innerHTML = `
-        ${p.model_key==='kling26pro'?'<span class="video-option-badge">AUDIO</span>':''}
-        <div class="video-option-name">${p.duration_s}s · ${p.model_key==='kling25pro'?'Kling 2.5 Pro':'Kling 2.6 Pro'}</div>
-        <div class="video-option-detail">${p.model_key==='kling25pro'?'1080p · Sin audio':'1080p · Audio nativo'}</div>
+        ${badge ? `<span class="video-option-badge" style="${badgeStyle}">${badge}</span>` : ''}
+        <div class="video-option-name">${p.duration_s}s · ${modelName}</div>
+        <div class="video-option-detail">${detail}</div>
         <div class="video-option-price">$${p.user_price_usd.toFixed(2)} USD</div>`;
       opt.addEventListener('click', () => {
         optsGrid.querySelectorAll('.video-option').forEach(e => e.classList.remove('selected'));
@@ -1450,7 +1486,7 @@ function showVideoConfirmModal(confirmData) {
 
     const topupTitle = document.createElement('div');
     topupTitle.className = 'video-topup-title';
-    topupTitle.textContent = '💳 Cargar créditos de video';
+    topupTitle.innerHTML = '💳 CARGAR CRÉDITOS DE VIDEO';
 
     const packsGrid = document.createElement('div');
     packsGrid.className = 'video-packs-grid';
@@ -1509,10 +1545,8 @@ function showVideoConfirmModal(confirmData) {
     topupSection.appendChild(packsGrid);
     topupSection.appendChild(topupBtn);
 
-    // Mostrar recarga SOLO si no puede generar ninguna opción
-    // Si tiene saldo suficiente para al menos una opción → ocultar recarga
-    const hasAnyAffordable = prices.some(p => p.can_afford);
-    topupSection.style.display = hasAnyAffordable ? 'none' : 'block';
+    // La sección de recarga SIEMPRE visible — el usuario puede cargar más créditos en cualquier momento
+    // El botón Generar se habilita/deshabilita según saldo, independientemente
 
     // Armar el box
     box.appendChild(title);
@@ -1684,7 +1718,7 @@ async function send(){
   const _userIsPro = !!(userProfile?.is_pro || userProfile?.plan === 'pro');
 
   // ── MODAL DE CONFIRMACIÓN PARA VIDEOS ──
-  let _videoModel = 'kling25pro';
+  let _videoModel = 'seedance2fast'; // Default: mejor precio/calidad
   let _videoDuration = 5;
   if (isVideoPrompt(prompt) && _userIsPro) {
     try {
@@ -1815,8 +1849,28 @@ Activá **Plan Pro** para mensajes ilimitados + imágenes, videos, archivos y m�
     document.getElementById('typing-msg')?.remove();
     const fileData=data.file_url?{url:data.file_url,type:data.file_type,name:data.file_name}:null;
     const userIsPro = _userIsPro;
-    console.log('userIsPro en respuesta:', userIsPro);
-    if(userIsPro){
+
+    // Caso especial: error de plataforma de video → mostrar botón de recarga inline
+    const isPlatformBalanceError = (data.model_label||'').includes('platform_balance');
+    if(isPlatformBalanceError) {
+      addMsg('ai', data.result, {label: data.model_label, ms: data.latency_ms}, '', null, null, '', '', false);
+      // Agregar botón de recarga directamente en el chat
+      setTimeout(() => {
+        const lastMsg = document.querySelector('.msg-row.ai:last-child .bubble');
+        if(lastMsg) {
+          const reloadBtn = document.createElement('button');
+          reloadBtn.style.cssText = 'margin-top:10px;padding:8px 16px;background:linear-gradient(135deg,#8B7FE8,#6C63D1);color:#fff;border:none;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer;display:block;';
+          reloadBtn.innerHTML = '💳 Cargar más créditos de video';
+          reloadBtn.onclick = () => {
+            // Abrir el modal de video directamente en la sección de recarga
+            const videoBtn = document.querySelector('[onclick*="video"], [data-action="video"]');
+            showVideoConfirmModal({ balance_usd: userProfile?.video_credits ?? 0, can_generate: false, prices: [] });
+          };
+          lastMsg.appendChild(reloadBtn);
+        }
+      }, 100);
+      activeHistory.push({role:'assistant', content: data.result});
+    } else if(userIsPro){
       // Pro: mostrar siempre la respuesta del backend sin ningún filtro
       addMsg('ai',data.result,{label:data.model_label,ms:data.latency_ms},data.image_url||'',null,fileData,data.tts_url||'',data.video_url||'',false);
       activeHistory.push({role:'assistant',content:data.result});
