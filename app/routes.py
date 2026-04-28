@@ -44,11 +44,12 @@ def parse_expiry(expires_at: str) -> datetime:
 
 
 # ── API KEYS ─────────────────────────────────────────────────────────────────
-GROQ_KEY   = os.getenv("GROQ_API_KEY", "")
-TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
-APP_URL    = os.getenv("APP_URL", "https://orquesta.up.railway.app")
+GROQ_KEY      = os.getenv("GROQ_API_KEY", "")
+TAVILY_KEY    = os.getenv("TAVILY_API_KEY", "")
+GEMINI_KEY    = os.getenv("GEMINI_API_KEY", "")
+OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # Para auto-mejoramiento via Claude API
+APP_URL       = os.getenv("APP_URL", "https://orquesta.up.railway.app")
 
 # ── STRIPE ───────────────────────────────────────────────────────────────────
 STRIPE_SECRET_KEY      = os.getenv("STRIPE_SECRET_KEY", "")
@@ -1779,8 +1780,27 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
     try:
         if task.startswith("file_gen_"):
             ftype = task.replace("file_gen_","")
+            # Si el prompt es vago ("el archivo", "en word", "en pdf"), buscar contexto en el historial
+            vague_file_prompts = ["el archivo","en word","en pdf","en excel","en formato","ese archivo",
+                                  "lo mismo en","pasalo a","convertilo","el mismo","ese documento"]
+            prompt_for_file = req.prompt
+            if any(v in req.prompt.lower() for v in vague_file_prompts) and req.history:
+                # Tomar el contenido de los últimos mensajes del asistente como contexto
+                context_parts = []
+                for m in req.history[-6:]:
+                    if m.get("role") == "assistant" and m.get("content",""):
+                        context_parts.append(m["content"][:500])
+                    elif m.get("role") == "user" and m.get("content",""):
+                        context_parts.append(m["content"][:200])
+                if context_parts:
+                    context_summary = " ".join(context_parts[-3:])[:800]
+                    prompt_for_file = (
+                        f"Basándote en esta conversación:\n{context_summary}\n\n"
+                        f"Generá un archivo {ftype.upper()} completo y profesional con ese contenido. "
+                        f"Pedido original del usuario: {req.prompt}"
+                    )
             try:
-                fb, fn, mime = await generate_file_from_prompt(req.prompt, ftype, username)
+                fb, fn, mime = await generate_file_from_prompt(prompt_for_file, ftype, username)
                 if not fb or len(fb) < 100:
                     raise Exception("El archivo generado está vacío")
                 token = cache_file(fb, fn, mime)
@@ -1808,7 +1828,22 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
                         result = f"✅ Tu archivo **{names.get(ftype,ftype.upper())}** está listo."
                         label = f"orquesta · {names.get(ftype,ftype).lower()}"
                     except Exception as e2:
-                        result = f"No pude generar el archivo. Reformulá el pedido con más detalle."
+                        err2 = str(e2) if str(e2) else type(e2).__name__
+                        print(f"File gen fallback error ({ftype}): {err2}")
+                        # Dar mensaje informativo con el error real para debugging
+                        result = (
+                            f"⚠️ No pude generar el archivo {ftype.upper()} en este momento. "
+                            f"Probá pedirlo de nuevo en unos segundos. "
+                            f"Si el error persiste, intentá con un pedido más específico — "
+                            f"por ejemplo: 'Generame un Word con un informe de ventas del mes de abril'."
+                        )
+                        # Registrar el error para auto-mejoramiento
+                        _error_log.append({
+                            "endpoint": f"/orchestrate/file_gen_{ftype}",
+                            "error": f"generate_{ftype} failed: {err_detail[:80]} | fallback: {err2[:80]}",
+                            "context": f"prompt: {req.prompt[:100]}",
+                            "ts": datetime.now(timezone.utc).isoformat()
+                        })
 
         elif task == "video_gen":
             video_url, result, label = await generate_video_smart(
@@ -3730,17 +3765,25 @@ async def download_video(url: str, filename: str = "orquesta_video.mp4"):
 
 @router.get("/status")
 async def status():
+    missing = []
+    if not ANTHROPIC_KEY: missing.append("ANTHROPIC_API_KEY (requerida para auto-mejoramiento)")
+    if not GROQ_KEY:      missing.append("GROQ_API_KEY")
+    if not GEMINI_KEY:    missing.append("GEMINI_API_KEY")
     return {
-        "groq":        bool(GROQ_KEY),
-        "tavily":      bool(TAVILY_KEY),
-        "gemini":      bool(GEMINI_KEY),
-        "openai":      bool(OPENAI_KEY),
-        "supabase":    bool(SUPABASE_URL),
-        "stripe":      bool(STRIPE_SECRET_KEY),
-        "mercadopago": bool(MP_ACCESS_TOKEN),
-        "videogen":    bool(os.getenv("VIDEOGEN_URL","")),
-        "file_generation": True,
-        "tts": bool(OPENAI_KEY)
+        "groq":              bool(GROQ_KEY),
+        "tavily":            bool(TAVILY_KEY),
+        "gemini":            bool(GEMINI_KEY),
+        "openai":            bool(OPENAI_KEY),
+        "anthropic":         bool(ANTHROPIC_KEY),   # Para auto-mejoramiento
+        "supabase":          bool(SUPABASE_URL),
+        "stripe":            bool(STRIPE_SECRET_KEY),
+        "mercadopago":       bool(MP_ACCESS_TOKEN),
+        "fal_video":         bool(os.getenv("FAL_API_KEY","")),
+        "github_token":      bool(os.getenv("GITHUB_TOKEN","")),
+        "file_generation":   True,
+        "tts":               bool(OPENAI_KEY),
+        "auto_mejoramiento": bool(ANTHROPIC_KEY) and bool(os.getenv("GITHUB_TOKEN","")),
+        "missing_keys":      missing if missing else None,
     }
 
 @router.get("/health")
