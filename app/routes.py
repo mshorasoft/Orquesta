@@ -2848,7 +2848,9 @@ async def approve_improvement(proposal_id: str):
 
                 if not fuzzy_applied:
                     # ── CASO 3: Sin match — documentar como comentario ────────
-                    # IMPORTANTE: esto NO cuenta como "aplicado" — es solo documentación
+                    # Construir las líneas comentadas fuera del f-string (compatible Python 3.11)
+                    old_commented = "\n".join("# " + l for l in old_code.strip()[:400].splitlines())
+                    new_commented = "\n".join("# " + l for l in new_code.strip()[:400].splitlines())
                     improvement_note = f"""
 # ── AUTO-MEJORA #{proposal_id} (PENDIENTE — no se pudo aplicar automáticamente) ──
 # Descripción: {proposal.get('description','')}
@@ -2856,9 +2858,9 @@ async def approve_improvement(proposal_id: str):
 # MOTIVO: fragmento old_code no encontrado en el archivo actual (puede haber cambiado)
 # ACCIÓN REQUERIDA: aplicar el siguiente cambio manualmente
 # ANTES:
-{chr(10).join("# " + l for l in old_code.strip()[:400].splitlines())}
+{old_commented}
 # DESPUÉS:
-{chr(10).join("# " + l for l in new_code.strip()[:400].splitlines())}
+{new_commented}
 # ─────────────────────────────────────────────────────────────────────────────
 """
                     updated_content = current_content + improvement_note
@@ -3553,4 +3555,4 @@ async def status():
 @router.get("/health")
 async def health():
     """Healthcheck endpoint requerido por Railway para verificar que el servidor está activo."""
-    return {"status": "ok", "service": "orquesta-a
+    return {"status": "ok", "service": "orquesta-api"}
