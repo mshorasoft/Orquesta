@@ -1092,6 +1092,18 @@ STRICT RULES:
 
             if not r.is_success:
                 err = d.get("detail") or d.get("error") or f"HTTP {r.status_code}"
+                err_str = str(err).lower()
+                # Si FAL rechaza por saldo/billing de la plataforma → NO es culpa del usuario
+                if any(k in err_str for k in ["exhausted","locked","billing","balance","payment"]):
+                    print(f"🚨 ALERTA: Saldo FAL.ai agotado — recargá en https://fal.ai/dashboard/billing | Error: {err}")
+                    # Registrar en error_log para que el auto-mejoramiento lo detecte
+                    _error_log.append({
+                        "endpoint": "/video",
+                        "error": f"FAL platform balance exhausted: {str(err)[:100]}",
+                        "context": "Saldo FAL.ai agotado — usuarios con créditos no pueden generar video",
+                        "ts": datetime.now(timezone.utc).isoformat()
+                    })
+                    return "", _friendly_video_error(str(err)), "error · platform_balance"
                 return "", f"❌ Error al iniciar la generación en FAL.ai: {err}", "error"
 
             request_id = d.get("request_id")
@@ -1159,16 +1171,20 @@ STRICT RULES:
 def _friendly_video_error(raw_error: str) -> str:
     """Convierte errores técnicos de FAL en mensajes amigables para el usuario."""
     e = raw_error.lower()
-    if "exhausted" in e or "locked" in e or "balance" in e or "billing" in e:
+    # "exhausted/locked/billing" en FAL = problema de saldo en la cuenta FAL de Orquesta
+    # NO confundir con saldo insuficiente del usuario — son dos cosas totalmente distintas
+    if "exhausted" in e or "locked" in e or "billing" in e or ("balance" in e and "insuficiente" not in e and "insufficient_balance" not in e):
         return (
-            "No puedo generar el video ahora mismo porque los créditos de video están agotados. "
-            "Podés recargar desde [fal.ai/dashboard/billing](https://fal.ai/dashboard/billing) "
-            "y el video quedará disponible enseguida."
+            "⚠️ El servicio de generación de video está siendo recargado momentáneamente. "
+            "Tu saldo personal **no fue descontado** y está intacto. "
+            "Intentá de nuevo en unos minutos — el servicio se restaura rápidamente."
         )
-    if "timeout" in e:
-        return "La generación del video tardó demasiado. Intentá de nuevo en unos minutos."
+    if "timeout" in e or "tardó" in e:
+        return "La generación del video tardó demasiado. Tu saldo no fue descontado — intentá de nuevo en unos minutos."
     if "not_pro" in e or "plan" in e:
         return "La generación de videos es exclusiva del Plan Pro."
+    if "insuficiente" in e or "insufficient_balance" in e:
+        return raw_error  # Saldo real del usuario — mostrar mensaje original con el monto
     return f"No se pudo generar el video: {raw_error[:120]}"
 
 
