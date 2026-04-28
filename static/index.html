@@ -1407,7 +1407,8 @@ function showVideoConfirmModal(confirmData) {
         optsGrid.querySelectorAll('.video-option').forEach(e => e.classList.remove('selected'));
         opt.classList.add('selected');
         _selectedVideoOption = { model_key: p.model_key, duration_s: p.duration_s, user_price_usd: p.user_price_usd };
-        genBtn.disabled = !p.can_afford;
+        // Habilitar generar si el usuario tiene saldo suficiente para esta opción
+        genBtn.disabled = balance < p.user_price_usd;
       });
       optsGrid.appendChild(opt);
     });
@@ -1430,7 +1431,12 @@ function showVideoConfirmModal(confirmData) {
     const genBtn = document.createElement('button');
     genBtn.className = 'video-confirm-ok';
     genBtn.innerHTML = '🎬 Generar';
-    genBtn.disabled = !canGenerate || !_selectedVideoOption;
+    // Habilitar si el usuario puede pagar al menos la opción seleccionada
+    // can_generate puede ser false por saldo de plataforma (FAL), no del usuario
+    const canAffordSelected = _selectedVideoOption
+      ? (balance >= (_selectedVideoOption.user_price_usd || 0))
+      : false;
+    genBtn.disabled = !canAffordSelected;
     genBtn.addEventListener('click', () => {
       if (_selectedVideoOption && !genBtn.disabled) closeVideoConfirm('generate');
     });
@@ -1502,6 +1508,11 @@ function showVideoConfirmModal(confirmData) {
     topupSection.appendChild(topupTitle);
     topupSection.appendChild(packsGrid);
     topupSection.appendChild(topupBtn);
+
+    // Mostrar recarga SOLO si no puede generar ninguna opción
+    // Si tiene saldo suficiente para al menos una opción → ocultar recarga
+    const hasAnyAffordable = prices.some(p => p.can_afford);
+    topupSection.style.display = hasAnyAffordable ? 'none' : 'block';
 
     // Armar el box
     box.appendChild(title);
