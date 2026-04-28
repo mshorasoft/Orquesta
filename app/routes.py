@@ -484,7 +484,7 @@ def classify(prompt, mode, history=None):
     if mode == "tecnico":  return "technical"
     p = prompt.lower()
 
-    # DETECCIÓN TEMPRANA: quejas, feedback, errores detectados → siempre general
+    # DETECCIÓN TEMPRANA: quejas, feedback, preguntas sobre lo que hizo → siempre general
     feedback_kw = [
         "detecté", "detecte", "encontré", "encontre", "noté", "note",
         "hay un error", "tiene un error", "está fallando", "esta fallando",
@@ -505,6 +505,15 @@ def classify(prompt, mode, history=None):
         "esta falla", "este fallo", "este error", "esta falla",
         "información detallada", "sin limites", "sin límites",
         "todo lo que averigues", "que averigues",
+        # Preguntas sobre lo que la IA generó/hizo → siempre chat, nunca archivo
+        "por qué generaste", "porque generaste", "por qué me diste", "porque me diste",
+        "qué relación tiene", "que relacion tiene", "qué tiene que ver", "que tiene que ver",
+        "explicame por qué", "explicá por qué", "explica por que", "por qué esa",
+        "qué representa", "que representa", "por qué esa imagen", "por qué ese",
+        "no era lo que pedí", "no es lo que pedi", "no es lo que pedía",
+        "eso no es", "no coincide", "está equivocado", "esta equivocado",
+        "me puedes explicar", "podés explicar", "puedes explicar",
+        "qué hiciste", "que hiciste", "por qué hiciste", "porque hiciste",
     ]
     if any(k in p for k in feedback_kw):
         return "general"  # Feedback/queja siempre va a chat general
@@ -856,7 +865,15 @@ async def generate_image_smart(prompt: str) -> tuple[str, str, str]:
     async def enhance(p):
         try:
             msgs = [
-                {"role":"system","content":"You are an expert image prompt engineer. Rewrite the user's request as a vivid, detailed DALL-E/Flux prompt in English. Add: artistic style, lighting, composition, quality descriptors (photorealistic, 8K, cinematic, detailed). Max 200 words. Reply ONLY with the enhanced prompt."},
+                {"role":"system","content":(
+                    "You are an expert image prompt engineer. "
+                    "Rewrite the user's request as a vivid, detailed Flux/DALL-E prompt in English. "
+                    "CRITICAL: The image MUST visually represent the EXACT subject the user describes. "
+                    "If the user mentions a document, plan, report, or concept — depict THAT specific thing (e.g. a tech diagram, a business chart, an infographic, a futuristic interface). "
+                    "Do NOT generate generic landscapes, forests, or unrelated scenes. "
+                    "Add: artistic style, lighting, composition, quality descriptors (photorealistic, 8K, cinematic). "
+                    "Max 200 words. Reply ONLY with the enhanced prompt, nothing else."
+                )},
                 {"role":"user","content":f"Request: {p}"}
             ]
             enhanced, _ = await groq_with_fallback(msgs, "llama-3.3-70b-versatile")
@@ -1708,7 +1725,21 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
                 result = _friendly_video_error(result)
 
         elif task == "image_gen":
-            img_url, result, label = await generate_image_smart(req.prompt)
+            # Construir prompt enriquecido con contexto del historial
+            # Si el prompt es vago ("esa imagen", "represente eso"), usar el historial
+            image_prompt = req.prompt
+            if req.history and len(req.history) >= 2:
+                # Extraer contexto relevante de los últimos mensajes
+                recent_context = " ".join([
+                    m.get("content","")[:300]
+                    for m in req.history[-4:]
+                    if m.get("role") == "assistant"
+                ])
+                vague_refs = ["esa imagen","ese resumen","eso","lo anterior","el documento",
+                              "lo que dijiste","lo que generaste","represente eso","ese tema"]
+                if any(v in req.prompt.lower() for v in vague_refs) and recent_context:
+                    image_prompt = f"{req.prompt}. Contexto: {recent_context[:400]}"
+            img_url, result, label = await generate_image_smart(image_prompt)
 
         elif task == "realtime":
             try:
