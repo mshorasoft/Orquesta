@@ -47,6 +47,7 @@ def parse_expiry(expires_at: str) -> datetime:
 GROQ_KEY      = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY    = os.getenv("TAVILY_API_KEY", "")
 GEMINI_KEY    = os.getenv("GEMINI_API_KEY", "")
+_gemini_quota_exhausted = False  # Se activa cuando Gemini devuelve 429, se resetea a medianoche
 OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # Para auto-mejoramiento via Claude API
 APP_URL       = os.getenv("APP_URL", "https://orquesta.up.railway.app")
@@ -628,6 +629,9 @@ async def call_groq(messages, model="llama-3.3-70b-versatile"):
         return d["choices"][0]["message"]["content"]
 
 async def call_gemini(prompt):
+    global _gemini_quota_exhausted
+    if _gemini_quota_exhausted:
+        raise Exception("Gemini quota agotada hoy (429). Usando solo Groq.")
     models = ["gemini-2.5-flash"]
     for model in models:
         try:
@@ -637,17 +641,27 @@ async def call_gemini(prompt):
                 d = r.json()
                 if r.is_success:
                     return d["candidates"][0]["content"]["parts"][0]["text"]
+                # Detectar quota agotada → desactivar Gemini para toda la sesión
+                if r.status_code == 429 or "RESOURCE_EXHAUSTED" in str(d) or "quota" in str(d).lower():
+                    _gemini_quota_exhausted = True
+                    print("⚠️ Gemini quota agotada (429) — desactivando para esta sesión, usando solo Groq")
+                    raise Exception("Gemini quota agotada (429)")
                 if "UNAVAILABLE" in str(d) or "503" in str(d):
                     continue
                 raise Exception(str(d))
         except Exception as e:
+            if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
+                _gemini_quota_exhausted = True
+                raise
             if "UNAVAILABLE" in str(e) or "503" in str(e):
                 continue
             raise
     raise Exception("Todos los modelos Gemini no disponibles")
 
 async def call_gemini_vision(prompt, b64, mime):
-    # Intentar múltiples modelos Gemini con fallback
+    global _gemini_quota_exhausted
+    if _gemini_quota_exhausted:
+        raise Exception("Gemini quota agotada hoy (429). Usando fallback.")
     models = ["gemini-2.5-flash"]
     last_error = None
     for model in models:
@@ -660,13 +674,21 @@ async def call_gemini_vision(prompt, b64, mime):
                 if r.is_success:
                     return d["candidates"][0]["content"]["parts"][0]["text"]
                 err = str(d)
+                # Detectar quota agotada
+                if r.status_code == 429 or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
+                    _gemini_quota_exhausted = True
+                    print("⚠️ Gemini Vision quota agotada (429)")
+                    raise Exception("Gemini quota agotada (429)")
                 if "UNAVAILABLE" in err or "503" in err or "overloaded" in err.lower() or "high demand" in err.lower():
                     last_error = err
-                    await asyncio.sleep(3)  # Esperar antes de probar siguiente
+                    await asyncio.sleep(3)
                     continue
                 raise Exception(err)
         except Exception as e:
             last_error = str(e)
+            if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
+                _gemini_quota_exhausted = True
+                raise
             if "UNAVAILABLE" in str(e) or "503" in str(e) or "high demand" in str(e).lower():
                 await asyncio.sleep(3)
                 continue
@@ -1929,7 +1951,15 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
         else:
             model = TASK_MODELS.get(task, "llama-3.3-70b-versatile")
             msgs = build_messages(system, req.history, req.prompt)
-            result, used = await groq_with_fallback(msgs, model)
+            try:
+                result, used = await groq_with_fallback(msgs, model, use_gemini_fallback=not _gemini_quota_exhausted)
+            except Exception as e:
+                err_str = str(e)
+                # Si es error de Gemini quota, intentar solo con Groq
+                if "429" in err_str or "quota" in err_str.lower() or "RESOURCE_EXHAUSTED" in err_str:
+                    result, used = await groq_with_fallback(msgs, model, use_gemini_fallback=False)
+                else:
+                    raise
             if used == "gemini": label = "gemini · flash"
 
         # ── TTS (solo Pro) ────────────────────────────────────────────────────
@@ -1976,7 +2006,18 @@ async def orchestrate(req: OrchestrateReq, request: Request, background_tasks: B
                 print(f"Warning: no se pudo guardar en Supabase: {e}")
 
     except HTTPException: raise
-    except Exception as e: raise HTTPException(502, detail=str(e))
+    except Exception as e:
+        err_str = str(e)
+        # Convertir errores técnicos en mensajes amigables
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+            raise HTTPException(503, detail="El servicio de IA está temporalmente saturado. Intentá de nuevo en unos minutos — usaremos Groq como alternativa.")
+        if "timeout" in err_str.lower() or "timed out" in err_str.lower():
+            raise HTTPException(504, detail="La respuesta tardó demasiado. Intentá de nuevo en unos segundos.")
+        if "connection" in err_str.lower() or "network" in err_str.lower():
+            raise HTTPException(503, detail="Error de conexión con el servicio de IA. Intentá de nuevo en unos segundos.")
+        # Error genérico — no mostrar el error técnico crudo al usuario
+        print(f"Orchestrate error: {err_str}")
+        raise HTTPException(502, detail="Ocurrió un error inesperado. Intentá de nuevo en unos segundos.")
 
     # Consultar créditos de video si se usó video_gen
     video_credits_remaining = -1
