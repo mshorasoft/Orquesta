@@ -2809,21 +2809,19 @@ async def approve_improvement(proposal_id: str):
 
     if old_code and new_code and GITHUB_TOKEN:
         try:
-            # Obtener el contenido actual del archivo
             current_content = await get_current_routes_content()
             if current_content and old_code.strip() in current_content:
-                # ── CASO 1: Match exacto — reemplazo directo ──────────────────
+                # ── CASO 1: Match exacto ──────────────────────────────────────
                 updated_content = current_content.replace(old_code.strip(), new_code.strip(), 1)
                 commit_msg = f"Auto-mejora #{proposal_id}: {proposal.get('description','mejora automática')}"
                 applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
                 if applied:
                     print(f"✅ Cambio aplicado en GitHub (match exacto): {proposal_id}")
                 else:
-                    error_msg = "Error al hacer commit en GitHub"
+                    error_msg = "Commit bloqueado — el new_code generado tiene errores de sintaxis. Revisá los logs de Railway."
+
             elif current_content:
-                # ── CASO 2: Match difuso — buscar la función por nombre ───────
-                # El código en GitHub puede haber cambiado levemente desde que se
-                # generó el old_code. Intentar encontrar la función por su firma.
+                # ── CASO 2: Match difuso por firma de función ─────────────────
                 fuzzy_applied = False
                 func_signatures = re.findall(
                     r'(?:async def|def)\s+\w+\s*\([^)]*\)\s*(?:->[^:]+)?:',
@@ -2833,52 +2831,61 @@ async def approve_improvement(proposal_id: str):
                     func_sig = func_signatures[0]
                     sig_pos = current_content.find(func_sig)
                     if sig_pos >= 0:
-                        # Encontrar el bloque completo de la función en el archivo actual
                         block_end = current_content.find('\nasync def ', sig_pos + 10)
                         if block_end == -1:
                             block_end = current_content.find('\ndef ', sig_pos + 10)
                         if block_end == -1:
                             block_end = sig_pos + 1500
                         current_func_block = current_content[sig_pos:block_end]
-                        # Reemplazar el bloque encontrado con el new_code
                         updated_content = current_content.replace(current_func_block, new_code.strip(), 1)
                         commit_msg = f"Auto-mejora #{proposal_id} (fuzzy): {proposal.get('description','mejora automática')}"
                         fuzzy_applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
                         if fuzzy_applied:
                             applied = True
                             print(f"✅ Cambio aplicado en GitHub (match difuso): {proposal_id}")
+                        else:
+                            error_msg = "Commit bloqueado — el new_code tiene errores de sintaxis (match difuso). Revisá los logs."
 
                 if not fuzzy_applied:
-                    # ── CASO 3: Sin match — agregar como comentario documentado ──
+                    # ── CASO 3: Sin match — documentar como comentario ────────
+                    # IMPORTANTE: esto NO cuenta como "aplicado" — es solo documentación
                     improvement_note = f"""
-# ── AUTO-MEJORA #{proposal_id} (pendiente de aplicar manualmente) ──────────
+# ── AUTO-MEJORA #{proposal_id} (PENDIENTE — no se pudo aplicar automáticamente) ──
 # Descripción: {proposal.get('description','')}
 # Fecha: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
-# Cambio sugerido:
-# ANTES: {old_code.strip()[:200]}
-# DESPUÉS: {new_code.strip()[:200]}
+# MOTIVO: fragmento old_code no encontrado en el archivo actual (puede haber cambiado)
+# ACCIÓN REQUERIDA: aplicar el siguiente cambio manualmente
+# ANTES:
+{chr(10).join("# " + l for l in old_code.strip()[:400].splitlines())}
+# DESPUÉS:
+{chr(10).join("# " + l for l in new_code.strip()[:400].splitlines())}
 # ─────────────────────────────────────────────────────────────────────────────
 """
                     updated_content = current_content + improvement_note
-                    commit_msg = f"Auto-mejora #{proposal_id} (doc): {proposal.get('description','')}"
-                    applied = await apply_github_change("app/routes.py", updated_content, commit_msg)
-                    if applied:
-                        print(f"✅ Mejora documentada en GitHub: {proposal_id}")
-                        error_msg = "Mejora documentada — fragmento exacto no encontrado. Revisión manual requerida."
+                    commit_msg = f"Auto-mejora #{proposal_id} (doc-pendiente): {proposal.get('description','')}"
+                    doc_committed = await apply_github_change("app/routes.py", updated_content, commit_msg)
+                    # applied queda en False — esto NO es una mejora aplicada
+                    if doc_committed:
+                        error_msg = "⚠️ No se encontró el fragmento exacto en el código actual — la mejora fue documentada como comentario en routes.py pero NO se aplicó el fix. Revisá manualmente."
+                        print(f"⚠️ Mejora documentada (no aplicada): {proposal_id}")
                     else:
-                        error_msg = "No se pudo hacer commit en GitHub"
+                        error_msg = "❌ No se pudo hacer commit ni documentar la mejora. Verificá el GITHUB_TOKEN."
             else:
-                error_msg = "No se pudo obtener el código actual de GitHub"
+                error_msg = "❌ No se pudo obtener el código actual de GitHub. Verificá el GITHUB_TOKEN y el repo."
                 print(f"⚠️ {error_msg}")
         except Exception as e:
-            error_msg = str(e)[:100]
+            error_msg = str(e)[:200]
             print(f"❌ Error aplicando cambio: {e}")
 
     ts_fmt = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+    desc = proposal.get("description","Sin descripción")
+    code_sum = proposal.get("code_summary","")
+    impact = proposal.get("impact","medio")
+    impact_color = "#e74c3c" if impact=="alto" else "#f39c12" if impact=="medio" else "#2ecc71"
 
     if applied:
         status_color = "#1D9E75"; status_icon = "✅"; status_title = "¡Mejora aplicada!"
-        status_msg = "El cambio fue commiteado en GitHub. Railway lo detectará y redesplegará automáticamente en ~2 minutos."
+        status_msg = "El cambio fue commiteado en GitHub. Railway lo detectará y redesplegará en ~2 minutos."
         deploy_badge = """<div style="background:#0a2e1e;border:1px solid #1D9E75;border-radius:10px;padding:1rem 1.5rem;margin:1.5rem 0;text-align:left;">
           <div style="color:#1D9E75;font-size:13px;font-weight:700;margin-bottom:6px;">🚀 Deploy automático en progreso</div>
           <div style="color:#7abf9e;font-size:12px;">GitHub → Railway detecta el commit → redeploy en ~2 min</div>
@@ -2887,16 +2894,17 @@ async def approve_improvement(proposal_id: str):
           </div></div>
         <style>@keyframes bar{{0%{{width:0%}}100%{{width:100%}}}}</style>"""
     else:
-        status_color = "#f39c12"; status_icon = "⚠️"; status_title = "Mejora registrada"
-        status_msg = error_msg if error_msg else "La mejora fue aprobada pero requiere aplicación manual (no había código exacto para reemplazar automáticamente)."
-        deploy_badge = f"""<div style="background:#2a1e0a;border:1px solid #f39c12;border-radius:10px;padding:1rem 1.5rem;margin:1.5rem 0;text-align:left;">
-          <div style="color:#f39c12;font-size:13px;font-weight:700;margin-bottom:6px;">📋 Acción manual requerida</div>
-          <div style="color:#c9a85c;font-size:12px;">{status_msg}</div></div>"""
-
-    desc = proposal.get("description","Sin descripción")
-    code_sum = proposal.get("code_summary","")
-    impact = proposal.get("impact","medio")
-    impact_color = "#e74c3c" if impact=="alto" else "#f39c12" if impact=="medio" else "#2ecc71"
+        # Diferenciar entre "documentada pero no aplicada" y "fallo total"
+        if "documentada" in error_msg or "comentario" in error_msg:
+            status_color = "#f39c12"; status_icon = "📋"; status_title = "No se pudo aplicar automáticamente"
+        else:
+            status_color = "#e74c3c"; status_icon = "❌"; status_title = "Error al aplicar la mejora"
+        deploy_badge = f"""<div style="background:#1a0e00;border:1px solid {status_color};border-radius:10px;padding:1rem 1.5rem;margin:1.5rem 0;text-align:left;">
+          <div style="color:{status_color};font-size:13px;font-weight:700;margin-bottom:8px;">{status_icon} Qué pasó</div>
+          <div style="color:#c9a85c;font-size:12px;line-height:1.6;">{error_msg if error_msg else 'No se encontró el fragmento de código para reemplazar.'}</div>
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid #333;color:#888;font-size:11px;">
+            💡 <strong>Qué hacer:</strong> Subí el routes_v5_final.py que te generó Claude — ese sí tiene el fix aplicado correctamente.
+          </div></div>"""
 
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -3545,4 +3553,4 @@ async def status():
 @router.get("/health")
 async def health():
     """Healthcheck endpoint requerido por Railway para verificar que el servidor está activo."""
-    return {"status": "ok", "service": "orquesta-api"}
+    return {"status": "ok", "service": "orquesta-a
