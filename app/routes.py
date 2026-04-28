@@ -384,6 +384,11 @@ IMAGE_GEN_KW = [
     "haceme una imagen","hacé una imagen","necesito una imagen","generame","generame una",
     "foto de","pintura de","retrato de","ilustración de","arte de","artwork",
     "imagina","imaginá","una foto","una imagen","un dibujo","un retrato",
+    # Patrones que causaban confusión con file_gen:
+    "que represente","que representa","represente","representa visualmente",
+    "imagen que","foto que","visual de","visualmente","imagen para",
+    "generarme una imagen","puedes generarme una imagen","podés generarme una imagen",
+    "generame una imagen","generá una imagen","hacé una foto",
 ]
 IMAGE_EDIT_KW = [
     "modifica","modificá","cambia","cambiá","reemplaza","reemplazá","edita","editá",
@@ -535,6 +540,11 @@ def classify(prompt, mode, history=None):
             if any(k in recent_joined for k in ["imagen","foto","dall-e","pollinations","generada"]):
                 return "image_gen"
 
+    # ── PRIORIDAD ABSOLUTA: imagen explícita siempre gana sobre archivo ──────
+    # Hay que chequear esto ANTES de detect_file_type porque el historial de PDF
+    # puede contaminar el contexto y hacer que "imagen" se clasifique como "pdf"
+    if any(k in p for k in IMAGE_GEN_KW): return "image_gen"
+
     ftype = detect_file_type(p)
     if ftype: return f"file_gen_{ftype}"
 
@@ -545,8 +555,8 @@ def classify(prompt, mode, history=None):
         has_video_intent = True
 
     if has_video_intent: return "video_gen"
-    if is_music_request(p): return "sound_gen"   # música ANTES que imagen
-    if any(k in p for k in IMAGE_GEN_KW): return "image_gen"
+    if is_music_request(p): return "sound_gen"
+    # image_gen ya fue chequeado antes de detect_file_type (prioridad absoluta)
     if any(k in p for k in TRANSLATE_KW): return "translate"
     if " vs " in p or " contra " in p: return "realtime"
     if any(x in p for x in ["cómo salió","como salio","cómo quedó","qué pasó","que paso"]): return "realtime"
@@ -2556,9 +2566,30 @@ async def send_improvement_email(proposal: dict) -> bool:
     return False
 
 async def apply_github_change(filename: str, new_content: str, commit_msg: str) -> bool:
-    """Aplica un cambio directamente en GitHub via API."""
+    """Aplica un cambio directamente en GitHub via API.
+    SIEMPRE valida sintaxis Python antes de commitear para evitar deploys rotos.
+    """
     if not GITHUB_TOKEN:
         return False
+
+    # ── VALIDACIÓN DE SINTAXIS OBLIGATORIA ───────────────────────────────────
+    # Si el archivo es Python, validar antes de subir. Nunca commitear código roto.
+    if filename.endswith(".py"):
+        import ast as _ast
+        try:
+            _ast.parse(new_content)
+        except SyntaxError as se:
+            print(f"❌ COMMIT BLOQUEADO — SyntaxError en línea {se.lineno}: {se.msg}")
+            print(f"   Fragmento problemático: {new_content[max(0,(se.offset or 1)-100):(se.offset or 100)+100]}")
+            return False
+        # Verificar que el archivo no quedó vacío o truncado (mínimo 100 líneas)
+        line_count = new_content.count('\n')
+        if line_count < 100:
+            print(f"❌ COMMIT BLOQUEADO — archivo sospechosamente corto ({line_count} líneas, mínimo esperado: 100)")
+            return False
+        print(f"✅ Sintaxis validada ({line_count} líneas) — procediendo con commit")
+    # ─────────────────────────────────────────────────────────────────────────
+
     try:
         # Obtener el SHA actual del archivo
         async with httpx.AsyncClient(timeout=30) as c:
@@ -2605,14 +2636,18 @@ async def get_current_routes_content() -> str:
         print(f"Error obteniendo routes.py: {e}")
     return ""
 
-top_error = _error_log[-1] if _error_log else _feedback_log[-1] if _feedback_log else {"endpoint": "general", "error": "feedback de usuario"}
-    
-    # Combinar _error_log y _feedback_log para el análisis de los errores recientes,
-    # asegurando que el feedback de usuario sea considerado en la propuesta de mejoras.
-    # Asumimos que los logs ya están ordenados cronológicamente por adición.
-    all_logs_for_recent_analysis = (_error_log or []) + (_feedback_log or [])
-    recent = all_logs_for_recent_analysis[-5:]
-    
+async def analyze_and_propose_improvements():
+    """
+    Analiza errores recientes y propone mejoras.
+    Cascada: Gemini → Groq → fallback garantizado.
+    Siempre envía email si hay errores para reportar.
+    """
+    if not _error_log and not _feedback_log:
+        print("📋 Sin errores para analizar")
+        return None
+
+    top_error = _error_log[-1] if _error_log else _feedback_log[-1] if _feedback_log else {"endpoint": "general", "error": "feedback de usuario"}
+    recent = _error_log[-5:]
     errores_txt = "\n".join([f"- {e['endpoint']}: {e['error'][:80]}" for e in recent])
 
     # Obtener código actual de routes.py para que la IA pueda proponer cambios reales
@@ -2667,7 +2702,13 @@ TU TAREA:
 3. El old_code ya está determinado — usá EXACTAMENTE el texto del "CÓDIGO ACTUAL EXACTO" de arriba
 4. Si el fix es pequeño y seguro, marcá safe_to_auto_apply como true
 
-IMPORTANTE: new_code debe ser un reemplazo funcional del fragmento mostrado. Mantené el mismo nivel de indentación.
+REGLAS CRÍTICAS PARA new_code (el sistema valida sintaxis antes de commitear):
+- El new_code DEBE ser Python 3.12 sintácticamente válido. Se ejecutará ast.parse() antes de subir.
+- Mantené EXACTAMENTE el mismo nivel de indentación que el código original (espacios, no tabs)
+- NO agregues bloques try/except incompletos ni funciones a medias
+- NO uses markdown, NO uses ```python, solo el código Python puro
+- El new_code debe poder reemplazar el old_code directamente sin romper el archivo
+- Si no estás seguro del fix correcto, hacé un cambio mínimo y seguro
 
 Respondé ÚNICAMENTE con JSON válido (sin markdown, sin texto extra):
 {{"type":"bug_fix","description":"descripción clara del problema y fix en español (2-3 oraciones)","impact":"alto","code_summary":"función exacta modificada en app/routes.py","old_code":{json.dumps(exact_old_code)},"new_code":"código corregido aquí","safe_to_auto_apply":false}}"""
