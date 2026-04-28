@@ -66,11 +66,33 @@ FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "20"))
 # ── PRECIOS DE VIDEO (FAL.ai → precio a usuario) ─────────────────────────────
 # Costo real FAL.ai x 2 = precio al usuario (100% de margen)
 VIDEO_PRICES = {
-    # (modelo, duracion_s): {"fal_cost": X, "user_price": X*2, "label": "..."}
-    ("kling25pro", 5):  {"fal_cost": 0.35, "user_price": 0.70,  "label": "Kling 2.5 Pro · 5s · 1080p"},
-    ("kling25pro", 10): {"fal_cost": 0.70, "user_price": 1.40,  "label": "Kling 2.5 Pro · 10s · 1080p"},
-    ("kling26pro", 5):  {"fal_cost": 0.70, "user_price": 1.40,  "label": "Kling 2.6 Pro · 5s · Audio nativo"},
-    ("kling26pro", 10): {"fal_cost": 1.40, "user_price": 2.80,  "label": "Kling 2.6 Pro · 10s · Audio nativo"},
+    # ── MARKUP: precio_usuario = costo_fal × 2 ────────────────────────────────
+    # Costo FAL es lo que pagás vos. user_price es lo que cobra Orquesta al usuario.
+
+    # ── VEO 3.1 (Google DeepMind) — mejor calidad del mercado, audio nativo ──
+    # FAL: ~$0.15/s Fast · ~$0.40/s Standard · con audio +50%
+    ("veo31fast", 8):  {"fal_cost": 0.80,  "user_price": 1.60,  "label": "Veo 3.1 Fast · 8s · Audio nativo"},
+    ("veo31",     8):  {"fal_cost": 2.00,  "user_price": 4.00,  "label": "Veo 3.1 HD · 8s · Audio nativo · 4K"},
+
+    # ── SEEDANCE 2.0 (ByteDance) — física perfecta, mejor precio/calidad ─────
+    # FAL: ~$0.07/s Fast · ~$0.14/s Pro
+    ("seedance2fast", 5):  {"fal_cost": 0.35,  "user_price": 0.70,  "label": "Seedance 2.0 Fast · 5s · Audio nativo"},
+    ("seedance2fast", 10): {"fal_cost": 0.70,  "user_price": 1.40,  "label": "Seedance 2.0 Fast · 10s · Audio nativo"},
+    ("seedance2pro",  5):  {"fal_cost": 0.70,  "user_price": 1.40,  "label": "Seedance 2.0 Pro · 5s · Audio nativo · HD"},
+    ("seedance2pro",  10): {"fal_cost": 1.40,  "user_price": 2.80,  "label": "Seedance 2.0 Pro · 10s · Audio nativo · HD"},
+
+    # ── KLING 3.0 (Kuaishou) — mejor fidelidad visual, multi-shot ────────────
+    # FAL: ~$0.10/s
+    ("kling3",  5):  {"fal_cost": 0.50,  "user_price": 1.00,  "label": "Kling 3.0 · 5s · 1080p · Multi-shot"},
+    ("kling3",  10): {"fal_cost": 1.00,  "user_price": 2.00,  "label": "Kling 3.0 · 10s · 1080p · Multi-shot"},
+
+    # ── KLING 2.6 Pro (con audio) — opción económica con audio ───────────────
+    ("kling26pro", 5):  {"fal_cost": 0.70,  "user_price": 1.40,  "label": "Kling 2.6 Pro · 5s · Audio nativo"},
+    ("kling26pro", 10): {"fal_cost": 1.40,  "user_price": 2.80,  "label": "Kling 2.6 Pro · 10s · Audio nativo"},
+
+    # ── KLING 2.5 Pro (sin audio) — opción más económica ─────────────────────
+    ("kling25pro", 5):  {"fal_cost": 0.35,  "user_price": 0.70,  "label": "Kling 2.5 Pro · 5s · 1080p"},
+    ("kling25pro", 10): {"fal_cost": 0.70,  "user_price": 1.40,  "label": "Kling 2.5 Pro · 10s · 1080p"},
 }
 VIDEO_DEFAULT_MODEL   = "kling25pro"
 VIDEO_DEFAULT_DURATION = 5
@@ -1010,13 +1032,24 @@ async def generate_video_smart(
     """
     FAL_KEY = os.getenv("FAL_API_KEY", "")
 
-    # Endpoints FAL.ai por modelo
+    # ── Endpoints FAL.ai por modelo ───────────────────────────────────────────
+    # Documentación: https://fal.ai/models
     FAL_ENDPOINTS = {
-        "kling25pro": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+        # Veo 3.1 (Google) — mejor calidad del mercado
+        "veo31fast": "fal-ai/veo3/fast",
+        "veo31":     "fal-ai/veo3",
+        # Seedance 2.0 (ByteDance) — mejor precio/calidad
+        "seedance2fast": "fal-ai/bytedance/seedance-v1-5-pro/text-to-video",
+        "seedance2pro":  "fal-ai/bytedance/seedance-v1-5-pro/text-to-video",
+        # Kling 3.0 — máxima fidelidad visual
+        "kling3":    "fal-ai/kling-video/v3/standard/text-to-video",
+        # Kling 2.x — opciones legacy más económicas
         "kling26pro": "fal-ai/kling-video/v2.6/pro/text-to-video",
+        "kling25pro": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
     }
-    endpoint = FAL_ENDPOINTS.get(model_key, FAL_ENDPOINTS["kling25pro"])
-    price_info = VIDEO_PRICES.get((model_key, duration_s), VIDEO_PRICES[("kling25pro", 5)])
+    endpoint = FAL_ENDPOINTS.get(model_key, FAL_ENDPOINTS["seedance2fast"])
+    price_info = VIDEO_PRICES.get((model_key, duration_s),
+                                   VIDEO_PRICES[("seedance2fast", 5)])
 
     # ── Mejorar el prompt ──────────────────────────────────────────────────────
     async def enhance(p: str) -> str:
@@ -1063,19 +1096,55 @@ STRICT RULES:
             )
 
     # ── Enviar request a FAL.ai ────────────────────────────────────────────────
-    fal_input = {
-        "prompt": enhanced,
-        "negative_prompt": (
-            "cartoon, animated, CGI, 3D render, illustration, watermark, text overlay, "
-            "low quality, blurry, distorted, deformed, artifacts, noise, overexposed, "
-            "underexposed, bad anatomy, ugly, worst quality, jpeg artifacts"
-        ),
-        "duration": str(duration_s),
-        "aspect_ratio": "16:9",
-        "cfg_scale": 0.5,
-    }
-    if model_key == "kling26pro":
-        fal_input["enable_audio"] = True
+    # ── Parámetros según modelo ───────────────────────────────────────────────
+    if model_key.startswith("veo31"):
+        # Veo 3.1: Google DeepMind — parámetros específicos
+        fal_input = {
+            "prompt": enhanced,
+            "duration": str(duration_s) if duration_s <= 8 else "8",
+            "aspect_ratio": "16:9",
+            "generate_audio": True,  # Audio nativo incluido
+        }
+    elif model_key.startswith("seedance"):
+        # Seedance 2.0: ByteDance — física y movimiento excepcionales
+        quality = "pro" if model_key == "seedance2pro" else "standard"
+        fal_input = {
+            "prompt": enhanced,
+            "negative_prompt": (
+                "cartoon, animated, CGI, watermark, text overlay, "
+                "low quality, blurry, distorted, artifacts, bad anatomy"
+            ),
+            "duration": str(duration_s),
+            "resolution": "1080p",
+            "quality": quality,
+        }
+    elif model_key == "kling3":
+        # Kling 3.0: multi-shot, máxima fidelidad
+        fal_input = {
+            "prompt": enhanced,
+            "negative_prompt": (
+                "cartoon, animated, CGI, 3D render, watermark, text overlay, "
+                "low quality, blurry, distorted, deformed, artifacts"
+            ),
+            "duration": str(duration_s),
+            "aspect_ratio": "16:9",
+            "mode": "standard",
+        }
+    else:
+        # Kling 2.x — parámetros originales
+        fal_input = {
+            "prompt": enhanced,
+            "negative_prompt": (
+                "cartoon, animated, CGI, 3D render, illustration, watermark, text overlay, "
+                "low quality, blurry, distorted, deformed, artifacts, noise, overexposed, "
+                "underexposed, bad anatomy, ugly, worst quality, jpeg artifacts"
+            ),
+            "duration": str(duration_s),
+            "aspect_ratio": "16:9",
+            "cfg_scale": 0.5,
+        }
+        if model_key == "kling26pro":
+            fal_input["enable_audio"] = True
 
     try:
         async with httpx.AsyncClient(timeout=30) as c:
@@ -1157,8 +1226,17 @@ STRICT RULES:
     if user:
         await consume_video_credit(user, model_key, duration_s, prompt[:80])
 
-    label_model = "Kling 2.5 Pro" if model_key == "kling25pro" else "Kling 2.6 Pro (audio)"
-    audio_note = " · Audio nativo incluido 🔊" if model_key == "kling26pro" else ""
+    label_model = {
+        "veo31fast":    "Veo 3.1 Fast (Google)",
+        "veo31":        "Veo 3.1 HD (Google)",
+        "seedance2fast":"Seedance 2.0 Fast (ByteDance)",
+        "seedance2pro": "Seedance 2.0 Pro (ByteDance)",
+        "kling3":       "Kling 3.0",
+        "kling26pro":   "Kling 2.6 Pro",
+        "kling25pro":   "Kling 2.5 Pro",
+    }.get(model_key, model_key)
+
+    audio_note = "" if model_key == "kling25pro" else " · Audio nativo 🔊"
     cost_note = f"\n\n> 💰 *${price_info['user_price']:.2f} USD · {label_model}{audio_note}*"
 
     return (
