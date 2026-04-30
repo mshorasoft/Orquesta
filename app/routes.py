@@ -2889,7 +2889,13 @@ async def analyze_and_propose_improvements():
         return None
 
     top_error = _error_log[-1] if _error_log else _feedback_log[-1] if _feedback_log else {"endpoint": "general", "error": "feedback de usuario"}
-    recent = _error_log[-5:]
+    
+    recent = []
+    if _error_log:
+        recent = _error_log[-5:]
+    elif _feedback_log:
+        recent = _feedback_log[-5:]
+        
     errores_txt = "\n".join([f"- {e['endpoint']}: {e['error'][:80]}" for e in recent])
 
     # Obtener código actual de routes.py para que la IA pueda proponer cambios reales
