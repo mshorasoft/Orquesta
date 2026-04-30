@@ -1599,11 +1599,49 @@ def cache_file(file_bytes, filename, mime):
             del _file_cache[k]
     return token
 
-def extract_title(prompt):
-    stop = r'\b(excel|word|pdf|planilla|documento|genera|crea|haceme|hacé|un|una|el|la|en|como|formato|me|por|favor|quiero|necesito|dame|reporte|informe)\b'
-    clean = re.sub(stop, '', prompt.lower(), flags=re.IGNORECASE)
-    clean = re.sub(r'\s+', ' ', clean).strip()
-    return clean.title()[:60] or "Documento Orquesta"
+def extract_title(prompt: str) -> str:
+    """Genera un título corto y descriptivo para el archivo, no el prompt completo."""
+    p = prompt.strip()
+
+    # 1. Eliminar frases de pedido al inicio (orden importa — de más específico a menos)
+    patterns_inicio = [
+        r'^necesito que me (generes?|crees?|hagas?|des?)\s*',
+        r'^(generame?|generá|crea|haceme?|hacé|dame|quiero|necesito|podés?|podes?|puedes?)\s+',
+        r'^por favor\s+',
+    ]
+    for pat in patterns_inicio:
+        p = re.sub(pat, '', p, flags=re.IGNORECASE).strip()
+
+    # 2. Eliminar tipo de archivo + artículo + preposición al inicio
+    p = re.sub(
+        r'^(un|una|el|la|este|esta)?\s*(excel|word|pdf|planilla|documento|archivo|'
+        r'reporte|informe|tabla|hoja|lista)\s+(de\s+|con\s+el\s+|con\s+la\s+|con\s+)?',
+        '', p, flags=re.IGNORECASE
+    ).strip()
+
+    # 3. Eliminar "con el/la" al inicio si quedó
+    p = re.sub(r'^(con\s+(el|la|los|las|un|una)\s+)', '', p, flags=re.IGNORECASE).strip()
+
+    # 4. Eliminar frases de contexto al final
+    p = re.sub(
+        r'\s+(por favor|gracias|completo|completa|detallado|detallada|'
+        r'profesional|para mi|para nosotros|urgente)[\s.]*$',
+        '', p, flags=re.IGNORECASE
+    ).strip()
+
+    # 5. Capitalizar
+    title = p.title() if p else ""
+
+    # 6. Fallback si quedó vacío o es muy genérico
+    generic = {'En Formato Word', 'En Word', 'En Pdf', 'En Excel', 'El Archivo', ''}
+    if not title or title in generic or len(title) < 3:
+        title = "Documento Orquesta"
+
+    # 7. Limitar a 40 chars cortando en la última palabra completa
+    if len(title) > 40:
+        title = title[:40].rsplit(' ', 1)[0]
+
+    return title or "Documento Orquesta"
 
 async def generate_file_from_prompt(prompt, file_type, username=""):
     file_system = FILE_SYSTEM_PROMPTS.get(file_type, FILE_SYSTEM_PROMPTS["pdf"])
@@ -3845,12 +3883,3 @@ async def status():
 async def health():
     """Healthcheck endpoint requerido por Railway para verificar que el servidor está activo."""
     return {"status": "ok", "service": "orquesta-api"}
-
-# ── AUTO-MEJORA #51c2582b (PENDIENTE MANUAL) ──
-# Desc: Error en /chat/feedback: Usuario reportó: necesito que soluciones los títulos que le colocas a los archivos son ídem el promp
-# Fecha: 2026-04-30 03:25 UTC
-# ANTES:
-# Error en /chat/feedback: Usuario reportó: necesito que soluciones los títulos que le colocas a los archivos son ídem el promp
-# DESPUÉS:
-# Ver descripción arriba
-# ────────────────────────────────────────────────────
