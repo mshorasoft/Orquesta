@@ -3845,3 +3845,12 @@ async def status():
 async def health():
     """Healthcheck endpoint requerido por Railway para verificar que el servidor está activo."""
     return {"status": "ok", "service": "orquesta-api"}
+
+# ── AUTO-MEJORA #51c2582b (PENDIENTE MANUAL) ──
+# Desc: Error en /chat/feedback: Usuario reportó: necesito que soluciones los títulos que le colocas a los archivos son ídem el promp
+# Fecha: 2026-04-30 03:25 UTC
+# ANTES:
+# Error en /chat/feedback: Usuario reportó: necesito que soluciones los títulos que le colocas a los archivos son ídem el promp
+# DESPUÉS:
+# Ver descripción arriba
+# ────────────────────────────────────────────────────
