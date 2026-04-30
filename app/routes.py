@@ -3030,58 +3030,70 @@ async def approve_improvement(proposal_id: str):
                 # ── ESTRATEGIA 2: Claude API regenera el fix en tiempo real ───
                 # Lee el archivo ACTUAL de GitHub y aplica el fix sin depender del old_code guardado
                 if not applied and ANTHROPIC_KEY and description:
-                    print(f"🤖 Estrategia 2: Claude API regenera fix sobre archivo actual...")
+                    print(f"🤖 Estrategia 2: Claude API regenera fix...")
                     try:
-                        # Encontrar la sección relevante del archivo actual
+                        import re as _re
                         search_map_local = [
-                            (["imagen","image","vision","foto"], "async def generate_image_smart"),
-                            (["video","kling","fal","mp4"], "async def generate_video_smart"),
+                            (["imagen","image","vision","foto","pollination"], "async def generate_image_smart"),
+                            (["video","kling","fal","mp4","seedance","veo"], "async def generate_video_smart"),
                             (["audio","music","sound","cancion"], "async def generate_music_smart"),
-                            (["classify","clasificad","task","pdf","excel"], "def classify"),
+                            (["classify","clasificad","tarea detect","clasifica"], "def classify"),
                             (["feedback","mejora","autorepar"], "async def analyze_and_propose_improvements"),
-                            (["webhook","mercadopago","pago"], "async def mercadopago_webhook"),
+                            (["webhook","mercadopago","topup"], "async def mercadopago_webhook"),
                             (["orchestrat","orquest"], "async def orchestrate"),
                             (["tts","voz"], "async def call_openai_tts"),
+                            (["titulo","título","extract_title","nombre.*arch"], "def extract_title"),
+                            (["archivo","word","excel","pdf","docx","file_gen"], "async def generate_file_from_prompt"),
+                            (["gemini","quota","429"], "async def call_gemini"),
+                            (["groq","llama","fallback"], "async def groq_with_fallback"),
                         ]
                         func_to_fix = ""
+                        matched_func = "inicio"
                         desc_lower = description.lower()
                         for keywords, func_name in search_map_local:
-                            if any(k in desc_lower for k in keywords):
+                            if any(_re.search(k, desc_lower) for k in keywords):
                                 idx = current_content.find(func_name)
                                 if idx >= 0:
-                                    func_to_fix = current_content[idx:idx+1500]
+                                    func_to_fix = current_content[idx:idx+2000]
+                                    matched_func = func_name
                                     break
                         if not func_to_fix:
-                            func_to_fix = current_content[:1200]
+                            words = [w for w in desc_lower.split() if len(w) > 5]
+                            for word in words[:5]:
+                                idx = current_content.find(word)
+                                if idx > 100:
+                                    start_fn = current_content.rfind("\nasync def ", 0, idx)
+                                    if start_fn == -1: start_fn = current_content.rfind("\ndef ", 0, idx)
+                                    if start_fn > 0:
+                                        func_to_fix = current_content[start_fn:start_fn+2000]
+                                        matched_func = f"búsqueda por '{word}'"
+                                        break
+                        if not func_to_fix:
+                            func_to_fix = current_content[1000:3000]
+                            matched_func = "fallback"
+                        print(f"   Función: {matched_func}")
 
                         claude_payload = {
                             "model": "claude-sonnet-4-6",
-                            "max_tokens": 2000,
-                            "messages": [{
-                                "role": "user",
-                                "content": (
-                                    f"Sos un experto en Python/FastAPI. Aplicá este fix en routes.py:\n\n"
-                                    f"PROBLEMA: {description}\n\n"
-                                    f"CÓDIGO ACTUAL DE ESA SECCIÓN:\n```python\n{func_to_fix}\n```\n\n"
-                                    f"REFERENCIA DEL FIX ORIGINAL:\n"
-                                    f"ANTES: {old_code[:400] if old_code else 'ver descripción'}\n"
-                                    f"DESPUÉS: {new_code[:400] if new_code else 'generá el fix'}\n\n"
-                                    f"INSTRUCCIÓN: Devolvé EXACTAMENTE en este formato:\n"
-                                    f"OLD_CODE_START\n(fragmento exacto a reemplazar del código actual)\nOLD_CODE_END\n"
-                                    f"NEW_CODE_START\n(código corregido Python 3.11, misma indentación, sin markdown)\nNEW_CODE_END"
-                                )
-                            }]
+                            "max_tokens": 2500,
+                            "messages": [{"role":"user","content":(
+                                f"Sos experto Python 3.11/FastAPI. Fix en routes.py:\n\n"
+                                f"PROBLEMA: {description}\n\n"
+                                f"CÓDIGO ACTUAL ({matched_func}):\n```python\n{func_to_fix}\n```\n\n"
+                                f"REFERENCIA:\nOLD: {old_code[:500] if old_code else 'ver descripción'}\n"
+                                f"NEW: {new_code[:500] if new_code else 'generá el fix'}\n\n"
+                                f"Devolvé SOLO este formato:\n"
+                                f"OLD_CODE_START\n(fragmento LITERAL del código actual a reemplazar)\nOLD_CODE_END\n"
+                                f"NEW_CODE_START\n(código corregido Python 3.11, sin markdown, misma indentación)\nNEW_CODE_END"
+                            )}]
                         }
-                        async with httpx.AsyncClient(timeout=45) as hc:
+                        async with httpx.AsyncClient(timeout=60) as hc:
                             cr = await hc.post(
                                 "https://api.anthropic.com/v1/messages",
-                                headers={
-                                    "x-api-key": ANTHROPIC_KEY,
-                                    "anthropic-version": "2023-06-01",
-                                    "content-type": "application/json"
-                                },
+                                headers={"x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","content-type":"application/json"},
                                 json=claude_payload
                             )
+                        print(f"   Claude status: {cr.status_code}")
                         if cr.is_success:
                             ct = cr.json()["content"][0]["text"]
                             if "OLD_CODE_START" in ct and "NEW_CODE_START" in ct:
@@ -3091,18 +3103,20 @@ async def approve_improvement(proposal_id: str):
                                     updated_content = current_content.replace(c_old, c_new, 1)
                                     applied = await apply_github_change("app/routes.py", updated_content,
                                         f"Auto-mejora #{proposal_id} (claude-regen): {description}")
-                                    if applied:
-                                        print(f"✅ Estrategia 2 (Claude regen): {proposal_id}")
-                                    else:
-                                        error_msg = "Claude regeneró el fix pero falló validación de sintaxis."
+                                    if applied: print(f"✅ Estrategia 2 OK: {proposal_id}")
+                                    else: error_msg = "Sintaxis inválida en new_code de Claude."
                                 else:
-                                    error_msg = "Claude no encontró el fragmento en el archivo actual."
+                                    reason = "c_old vacío" if not c_old else "c_new vacío" if not c_new else "c_old no en archivo"
+                                    error_msg = f"Claude: {reason} | old[:80]={c_old[:80] if c_old else 'N/A'}"
+                                    print(f"❌ {error_msg}")
                             else:
-                                error_msg = "Claude no devolvió el formato OLD_CODE_START/END."
+                                error_msg = f"Claude no usó formato OLD/NEW_CODE_START. Resp: {ct[:150]}"
+                                print(f"❌ {error_msg}")
                         else:
-                            error_msg = f"Claude API error: {cr.status_code}"
+                            error_msg = f"Claude API {cr.status_code}: {cr.text[:200]}"
+                            print(f"❌ {error_msg}")
                     except Exception as ce:
-                        error_msg = f"Error en Claude regen: {str(ce)[:100]}"
+                        error_msg = f"Error Estrategia 2: {str(ce)[:150]}"
                         print(f"❌ {error_msg}")
 
                 # ── ESTRATEGIA 3: Match difuso por firma de función ───────────
@@ -3831,12 +3845,3 @@ async def status():
 async def health():
     """Healthcheck endpoint requerido por Railway para verificar que el servidor está activo."""
     return {"status": "ok", "service": "orquesta-api"}
-
-# ── AUTO-MEJORA #617d7f15 (PENDIENTE MANUAL) ──
-# Desc: Error en /chat/feedback: Usuario reportó: perfecto, reporta  a Horacio por favor para que tu sistema de automejoramiento solu
-# Fecha: 2026-04-30 02:51 UTC
-# ANTES:
-# Error en /chat/feedback: Usuario reportó: perfecto, reporta  a Horacio por favor para que tu sistema de automejoramiento solu
-# DESPUÉS:
-# Ver descripción arriba
-# ────────────────────────────────────────────────────
