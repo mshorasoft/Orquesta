@@ -3889,3 +3889,12 @@ async def status():
 async def health():
     """Healthcheck endpoint requerido por Railway para verificar que el servidor está activo."""
     return {"status": "ok", "service": "orquesta-api"}
+
+# ── AUTO-MEJORA #d7e249b1 (PENDIENTE MANUAL) ──
+# Desc: Error en /chat/feedback: Usuario reportó: Bien orquesta, entonces hagamos una cosa. Reporta Horacio este problema por favor y
+# Fecha: 2026-05-02 00:58 UTC
+# ANTES:
+# Error en /chat/feedback: Usuario reportó: Bien orquesta, entonces hagamos una cosa. Reporta Horacio este problema por favor y
+# DESPUÉS:
+# Ver descripción arriba
+# ────────────────────────────────────────────────────
